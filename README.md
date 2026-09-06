@@ -35,7 +35,8 @@ watermark\
 │   ├── static\                前端(无框架 SPA,朱印视觉)
 │   ├── data\                  运行数据(任务历史 jobs.json、日志)
 │   ├── local_config.bat       (可选)手工指定的本机路径覆盖
-│   ├── 启动WebUI.bat          双击启动(--check 传环境体检)
+│   ├── 启动WebUI.bat          双击启动(--check 传环境体检;检测到旧实例在跑会问"重启还是沿用")
+│   ├── 停止WebUI.bat          双击停止服务并释放端口(叉窗口杀不干净时用它)
 │   └── 安装环境.bat           新电脑一键装环境(全部下载进项目目录)
 ├── bin\                       (按需生成)ffmpeg/ffprobe 自动下载落位处
 ├── runtime\                   (按需生成)Python 内嵌版 + 依赖(新电脑免 conda)
