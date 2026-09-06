@@ -96,21 +96,43 @@ def dl(url, proxy=None, timeout=30):
     return buf.getvalue()
 
 
-def fetch_ffmpeg():
-    """下载 ffmpeg 静态版到项目 bin\\。线路:直连 -> 国内镜像(自动) -> WM_PROXY -> 问用户(现场用,绝不记住)。"""
-    BIN.mkdir(exist_ok=True)
-    attempts = [("直连", FFMPEG_URL)] + [(f"国内镜像{i}", u) for i, u in enumerate(FFMPEG_MIRRORS, 1)]
+def detect_proxy():
+    """探测本机代理:WM_PROXY 手工指定优先(不再探测直接信);否则探测常见默认口 7897。
+    活着返回代理地址,死了返回 None。"""
     if WM_PROXY:
-        attempts.append(("你的代理 WM_PROXY", FFMPEG_URL))
+        return WM_PROXY
+    try:
+        socket.create_connection(("127.0.0.1", 7897), timeout=1).close()
+        return "http://127.0.0.1:7897"
+    except OSError:
+        return None
+
+
+def fetch_ffmpeg():
+    """下载 ffmpeg 静态版到项目 bin\\。
+    线路顺序:代理活着优先走代理(通常最快) -> 死了走国内镜像轮试 -> 镜像全挂现场问端口(绝不记住)。"""
+    BIN.mkdir(exist_ok=True)
     data, via = None, ""
-    for label, url in attempts:
-        print(f"      尝试{label}...")
+    proxy = detect_proxy()
+    if proxy:
+        print(f"      检测到本机代理 {proxy},优先走代理(通常比镜像快)...")
         try:
-            data = dl(url, proxy=WM_PROXY if "代理" in label else None)
-            via = label
-            break
+            data = dl(FFMPEG_URL, proxy=proxy, timeout=120)
+            via = f"代理 {proxy}"
         except Exception as e:
-            print(f"      {label} 失败: {e}")
+            print(f"      代理线路失败: {e},改走国内镜像...")
+    else:
+        print("      未检测到本机代理,走国内镜像...")
+    if data is None:
+        for label, url in [("国内镜像1", FFMPEG_MIRRORS[0]), ("国内镜像2", FFMPEG_MIRRORS[1]),
+                           ("国内镜像3", FFMPEG_MIRRORS[2]), ("直连", FFMPEG_URL)]:
+            print(f"      尝试{label}...")
+            try:
+                data = dl(url)
+                via = label
+                break
+            except Exception as e:
+                print(f"      {label} 失败: {e}")
     wrong = 0
     while data is None:
         addr = ask_proxy()
@@ -120,6 +142,7 @@ def fetch_ffmpeg():
             return False
         try:
             data = dl(FFMPEG_URL, proxy=addr, timeout=120)
+            via = f"你输入的代理 {addr}"
         except Exception as e:
             wrong += 1
             print(f"      这个地址不行: {e}")
@@ -140,7 +163,7 @@ def fetch_ffmpeg():
 
 
 def ask_proxy():
-    print("      自动线路(直连 + 国内镜像)全部失败了。最后可以试你的代理:")
+    print("      镜像和直连都失败了。最后试你的代理:")
     print("      如果你电脑开着 Clash/v2rayN 之类,把它的代理地址抄进来,例: http://127.0.0.1:7890")
     try:
         return input("      不知道/没有代理就直接回车,给你手动下载的办法: ").strip()
