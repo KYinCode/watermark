@@ -28,7 +28,7 @@ RUNTIME_PY = PROJ / "runtime" / "python" / "python.exe"
 BIN = PROJ / "bin"
 CKPT = PROJ / "third_party" / "watermark-anything" / "checkpoints" / "wam_mit.pth"
 FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
-LOCAL_PROXY = "http://127.0.0.1:7897"
+LOCAL_PROXY = os.environ.get("WM_PROXY", "http://127.0.0.1:7897")  # 代理端口不同就设 WM_PROXY
 FF_BASES = (r"C:\Environment\FFmpeg\FFmpeg_Builds\bin",  # 本机既有安装(兜底)
             r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin")
 PIP_CORE = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("python-multipart", "multipart"),
@@ -97,11 +97,13 @@ def fetch_ffmpeg():
         print("      直连下载 ffmpeg(~100MB)...")
         data = dl(FFMPEG_URL)
     except Exception as e:
-        print(f"      直连失败: {e}")
+        print(f"      直连失败: {e}(Windows 下直连会自动走系统代理,若你开了系统代理仍失败多半是真不通)")
         try:
-            socket.create_connection(("127.0.0.1", 7897), timeout=1).close()
+            socket.create_connection(("127.0.0.1", int(LOCAL_PROXY.rsplit(":", 1)[1])), timeout=1).close()
         except OSError:
-            print(f"      也没有本地代理 {LOCAL_PROXY}。手动方案:下载 ffmpeg 后把 ffmpeg.exe/ffprobe.exe 放进 {BIN}")
+            print(f"      本地 {LOCAL_PROXY} 也不通。两条路:"
+                  f"①开好代理后设环境变量 WM_PROXY=你的代理地址 再重跑;"
+                  f"②手动下载 ffmpeg,把 ffmpeg.exe/ffprobe.exe 放进 {BIN}")
             return False
         print(f"      改走本地代理 {LOCAL_PROXY}...")
         try:
