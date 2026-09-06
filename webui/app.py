@@ -1057,8 +1057,14 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 if __name__ == "__main__":
+    import asyncio
     import uvicorn
     import shutil as _sh
+    if sys.platform == "win32":
+        # Proactor 循环在客户端突然断开时会在 connection_lost 回调里抛
+        # ConnectionResetError 并带崩进程;Selector 循环无此问题
+        # (本项目子进程全是线程池内的阻塞调用,不依赖 Proactor 的异步子进程)。
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if not Path(C.FF).exists() and not _sh.which(C.FF):
         print("[警告] 未找到 ffmpeg:打水印/预览会失败。运行 webui\\安装环境.bat 自动下载到项目 bin\\,"
               "或在 webui\\local_config.bat 里 set \"WM_FFMPEG=你的ffmpeg目录\"", flush=True)
