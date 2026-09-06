@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 
 PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ / "src"))
@@ -709,10 +710,17 @@ def api_raw(path: str):
     return FileResponse(p, media_type=V_MIME.get(ext, "application/octet-stream"))
 
 
+_probe_cache: dict = {}
+
+
 def _decode_frame_rgb(p: Path, t: float):
-    """ffmpeg 取单帧 -> RGB ndarray(供差异图计算)"""
+    """ffmpeg 取单帧 -> RGB ndarray(供差异图计算);探测结果按文件缓存"""
     import numpy as np
-    info = ffprobe_full(p)
+    key = str(p)
+    info = _probe_cache.get(key)
+    if info is None:
+        info = ffprobe_full(p)
+        _probe_cache[key] = info
     w, h = info["w"], info["h"]
     r = subprocess.run(
         [C.FF, "-hide_banner", "-loglevel", "error", "-nostdin",
@@ -1013,13 +1021,26 @@ def api_download(path: str):
 START_TS = str(int(time.time()))  # 资源版本号:每次重启自动破浏览器缓存
 
 
-@app.middleware("http")
-async def no_cache_static(request, call_next):
-    resp = await call_next(request)
-    p = request.url.path
-    if p == "/" or p.startswith("/static"):
-        resp.headers["Cache-Control"] = "no-cache"
-    return resp
+class NoCacheStatic:
+    """纯 ASGI 中间件:仅给静态页加 no-cache。
+    不用 BaseHTTPMiddleware——它会把 FileResponse 流包进内存队列,视频 range 供流吞吐暴跌。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and (scope["path"] == "/" or scope["path"].startswith("/static")):
+            async def send_with_header(message):
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers.append("Cache-Control", "no-cache")
+                await send(message)
+            await self.app(scope, receive, send_with_header)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(NoCacheStatic)
 
 
 @app.get("/")

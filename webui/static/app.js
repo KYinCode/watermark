@@ -1044,14 +1044,17 @@ function compareDrawer(f) {
     <div class="warn-box hidden" id="cmp-afall" style="margin-top:10px">原片格式浏览器无法直接播放(常见于 HEVC 未装系统解码扩展)。
       <button class="btn sm" id="cmp-tc">生成浏览器预览版</button> <span class="small" id="cmp-tcst"></span>
       <div class="small muted">纯 CPU 转码一次并缓存(不占用 GPU 队列),完成后自动替换左屏。</div></div>
-    <div class="small muted" style="margin-top:8px">两路画面以原片为主时钟:播放/暂停/拖动完全镜像,播放中漂移 &gt;33ms(一帧)自动拉回;「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
+    <div class="small muted" style="margin-top:8px">进度条只负责取时间:拖动/点击后两路视频同时暂停、并行解码到目标帧,两路都解完才继续播放(解码期间播放键禁用);播放中漂移用变速平滑追(0.8×~1.2×),偏差过大才重新跳转。「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
   drawer(`对比 · ${f.name}`, body, { mode: "sheet", wide: true, width: "calc(100vw - 24px)" });
 
   const $id = s => $(s, body);
   const a = $id("#cmp-a"), b = $id("#cmp-b"), slider = $id("#cmp-slider"), playBtn = $id("#cmp-play"),
         timeEl = $id("#cmp-time"), diffImg = $id("#cmp-diff"), psnrEl = $id("#cmp-psnr"), ampSel = $id("#cmp-amp");
-  let amp = 8, tok = 0, durl = null, ready = 0, sliderDrag = false,
-      userSeeking = false, seekChain = false, scrubTimer = null;
+  let amp = 8, tok = 0, durl = null, ready = 0, sliderDrag = false, scrubTimer = null;
+  // 模型:进度条只是时间轴,只负责算时间。所有跳转 = 两个视频并行直跳同一时间(互不等待);
+  // 播放中漂移用变速(0.9×/1.1×)平滑追,偏差 >250ms 才双 seek。
+  const EPS = 0.02;                            // 小于半帧视为已对齐,不再触发 seek
+  const near = (x, y) => Math.abs(x - y) < EPS;
   const updDiff = () => {
     const my = ++tok;
     fetch(`/api/diff?path=${enc(f.path)}&source=${enc(src)}&t=${a.currentTime.toFixed(2)}&amp=${amp}`)
@@ -1060,10 +1063,39 @@ function compareDrawer(f) {
       .catch(() => { psnrEl.textContent = "—"; });
   };
   const updDiffSoon = debounce(updDiff, 260);
-  const syncNow = () => { b.currentTime = a.currentTime; };
+  const syncNow = () => { if (b.readyState > 0 && !b.seeking && !near(b.currentTime, a.currentTime)) b.currentTime = a.currentTime; };
+  b.addEventListener("loadedmetadata", () => syncNow());   // 右屏装载完成后再对齐一次(覆盖装载期赋值失效)
+  // —— 解码闸门:跳转时两路强制暂停、并行直跳;两路都解出目标帧(seeked + readyState≥2)才放行 ——
+  // 等待期间播放键禁用(点击无效);放行时若跳转前在播则自动续播。
+  let gate = 0, gateWasPlaying = false, gateGuard = 0;
+  const gateOpen = () => {
+    if (gate > 0 || a.seeking || b.seeking || a.readyState < 2 || b.readyState < 2) return;   // 任一路没解完就继续等
+    clearTimeout(gateGuard);
+    playBtn.disabled = false;
+    playBtn.textContent = a.paused ? "▶ 播放" : "⏸ 暂停";
+    updDiffSoon();                                              // 放行时差异图对准的就是屏幕画面
+    if (gateWasPlaying && a.paused && !sliderDrag) { gateWasPlaying = false; a.play(); b.play(); }
+  };
+  const seekGate = () => { if (gate > 0) gate--; gateOpen(); };
+  a.addEventListener("seeked", seekGate);
+  b.addEventListener("seeked", seekGate);
+  ["loadeddata", "canplay"].forEach(ev => { a.addEventListener(ev, gateOpen); b.addEventListener(ev, gateOpen); });
+  // 双视频并行直跳同一时间,互不等待
   const seekBoth = t => {
-    userSeeking = true; seekChain = true;
-    a.currentTime = t;
+    const dur = a.duration || f.duration || 0;
+    if (dur > 0) t = Math.max(0, Math.min(t, dur));
+    const needA = a.readyState > 0 && (a.seeking || !near(a.currentTime, t));
+    const needB = b.readyState > 0 && (b.seeking || !near(b.currentTime, t));
+    if (!needA && !needB) return;
+    if (gate === 0 && !sliderDrag && !gateWasPlaying) gateWasPlaying = !a.paused && !b.paused;   // 新一轮跳转:记录播放意图
+    a.pause(); b.pause();                          // 闸门:跳转期间禁止播放
+    playBtn.disabled = true; playBtn.textContent = "⏳ 解码中…";
+    clearTimeout(gateGuard);
+    gate = (needA ? 1 : 0) + (needB ? 1 : 0);      // 等两路的 seeked
+    gateGuard = setTimeout(() => { gate = 0; gateOpen(); }, 3000);   // 兜底:信号丢失也强制放行
+    if (needA) a.currentTime = t;
+    if (needB) b.currentTime = t;
+    beginSettle();
   };
   a.addEventListener("loadedmetadata", () => { if (++ready === 2) { slider.max = a.duration.toFixed(2); fitPaneHeights(); updDiffSoon(); } });
   b.addEventListener("loadedmetadata", () => { if (++ready === 2) { slider.max = a.duration.toFixed(2); fitPaneHeights(); updDiffSoon(); } });
@@ -1084,10 +1116,12 @@ function compareDrawer(f) {
   $id("#cmp-contain").onclick = () => grp.reset();
   $id("#cmp-cover").onclick = () => grp.zoomTo(Math.max(za.coverFactor(), zb.coverFactor(), zd.coverFactor()));
   $id("#cmp-11").onclick = () => grp.zoomTo(Math.max(za.scale11(), zb.scale11(), zd.scale11()));
-  a.addEventListener("play", () => { if (b.currentTime !== a.currentTime) syncNow(); b.play(); playBtn.textContent = "⏸ 暂停"; });
-  a.addEventListener("pause", () => { b.pause(); b.currentTime = a.currentTime; playBtn.textContent = "▶ 播放"; updDiffSoon(); });
-  a.addEventListener("seeked", () => { syncNow(); updDiffSoon(); });
-  b.addEventListener("seeked", () => { if (seekChain) { seekChain = false; setTimeout(() => { userSeeking = false; }, 80); updDiff(); } });
+  let settleUntil = 0, bPausedSince = 0;
+  const beginSettle = () => { settleUntil = performance.now() + 300; };   // 起步瞬间给解码器一点热身期
+  a.addEventListener("play", () => { playBtn.textContent = "⏸ 暂停"; });
+  a.addEventListener("playing", () => { beginSettle(); if (!a.paused && b.paused && !sliderDrag && !b.seeking) b.play(); });
+  a.addEventListener("waiting", () => { if (!a.paused && !b.paused) b.pause(); });   // 左屏供流停顿,右屏同步冻结
+  a.addEventListener("pause", () => { b.pause(); b.playbackRate = a.playbackRate; syncNow(); if (gate === 0) playBtn.textContent = "▶ 播放"; updDiffSoon(); });
   a.addEventListener("ratechange", () => { b.playbackRate = a.playbackRate; });
   a.addEventListener("timeupdate", () => {
     if (!sliderDrag) slider.value = a.currentTime;
@@ -1095,22 +1129,47 @@ function compareDrawer(f) {
   });
   (function raf() {
     if (!body.isConnected) return;
-    if (!a.paused && !userSeeking && !a.seeking && !b.seeking &&
-        Math.abs(a.currentTime - b.currentTime) > 0.034) b.currentTime = a.currentTime;
+    // 看门狗:左播右停超过 500ms(任何竞态卡住)强制恢复,兜底防"右屏冻住"
+    if (b.paused && !bPausedSince) bPausedSince = performance.now();
+    if (!b.paused) bPausedSince = 0;
+    if (!a.paused && b.paused && !sliderDrag && !b.seeking &&
+        bPausedSince && performance.now() - bPausedSince > 500) {
+      bPausedSince = 0;
+      b.play();
+    }
+    // 漂移校正:全程变速平滑追(0.8×/1.2×),只有真失步(>250ms)才双 seek
+    if (!a.paused && !a.seeking && !b.seeking && performance.now() > settleUntil) {
+      const drift = b.currentTime - a.currentTime;          // 正 = 右屏超前
+      const target = Math.abs(drift) > 0.25 ? null
+        : drift < -0.033 ? a.playbackRate * 1.2
+        : drift > 0.033 ? a.playbackRate * 0.8
+        : a.playbackRate;
+      if (target == null) {
+        if (b.readyState > 0) seekBoth(a.currentTime);      // 真失步:两路并行直跳拉回
+      }
+      else if (Math.abs(b.playbackRate - target) > 1e-6) b.playbackRate = target;
+    }
     requestAnimationFrame(raf);
   })();
-  playBtn.onclick = () => { if (a.paused) { if (!userSeeking) syncNow(); a.play(); } else a.pause(); };
+  playBtn.onclick = () => {
+    if (gate > 0 || playBtn.disabled) return;   // 解码闸门未放行:点击无效
+    if (a.paused) {
+      if (!b.seeking && !near(b.currentTime, a.currentTime)) b.currentTime = a.currentTime;   // 起播前右屏对齐左屏
+      a.play(); b.play();
+    } else { a.pause(); }   // a 的 pause 事件会同步暂停右屏
+  };
   slider.addEventListener("input", () => {
-    sliderDrag = true;
-    a.pause();
+    if (!sliderDrag) { sliderDrag = true; gateWasPlaying = !a.paused && !b.paused; a.pause(); }   // 拖动开始:记录播放意图并暂停
+    b.pause();
     timeEl.textContent = `${fmtT(+slider.value)} / ${fmtT(a.duration || f.duration || 0)}`;
     clearTimeout(scrubTimer);
-    scrubTimer = setTimeout(() => seekBoth(+slider.value), 160);
+    scrubTimer = setTimeout(() => seekBoth(+slider.value), 120);
   });
   slider.addEventListener("change", () => {
     sliderDrag = false;
     clearTimeout(scrubTimer);
     seekBoth(+slider.value);
+    if (gate === 0 && gateWasPlaying && a.paused) { gateWasPlaying = false; a.play(); b.play(); }   // 位置没动没触发闸门时也要续播
   });
   const fps = f.fps || 30;
   const step = dir => {
