@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "scheme": "WAM wam_mit 32-bit fixed ID; ID=sha256(text utf-8)[:4] big-endian (派生规则不可变)",
+  "works": [
+    {
+      "id_hex": "96e6955d",
+      "name": "主作品",
+      "text": "©Yin(Yin_Code/KYin_Code/KYin)版权所有|禁止搬运 Bili:3706940936948128 Douyin:Yin_Code",
+      "note": "迁移自旧码本",
+      "created_at": "2026-09-05T23:46:50"
+    },
+    {
+      "id_hex": "20fb2002",
+      "name": "测试作品-演示",
+      "text": "©测试(TEST_KYin)版权所有|验收测试用 Bili:000",
+      "note": "",
+      "created_at": "2026-09-06T01:01:46"
+    }
+  ]
+}

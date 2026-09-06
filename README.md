@@ -1,0 +1,80 @@
+# watermark-v2 项目说明
+
+学习型隐形水印(WAM,Meta ICLR 2025)对视频/图片逐帧打水印,抗录屏、截图裁剪、画面合成、平台转码。
+验收结论见 `docs/验收报告.md`。
+
+## 目录结构
+
+```
+watermark\
+├── data\                      【输入】待打水印的原始文件直接放这里(扁平,不限文件名)
+├── output\                    【输出】所有成品出现在这里
+│   ├── DeepSeek+DSH_已加水印_v2.mp4    成品视频(1080p60, 22478帧)
+│   ├── ChatGPT Image *_已加水印.png    成品图片 ×2
+│   ├── 成品_meta.json                  成品技术参数
+│   ├── verification\                   验收原始数据(verify_seg*.json)
+│   └── samples\                        攻击效果对比样本图
+├── src\                       代码
+│   ├── common.py              公共库(路径/模型加载/ffmpeg 管道/码本)
+│   ├── embed_video.py         全片嵌入(源视频 → 成品)
+│   ├── embed_images.py        图片嵌入
+│   ├── verify.py              验收重测(30 项攻击 × 两段 660 帧)
+│   ├── make_report.py         从 verification JSON 生成验收报告
+│   ├── run_all.py             一键全流程
+│   └── s2_attacks.py          攻击原语库
+├── tools\                     【取证提取】
+│   ├── extract_wm.py          水印提取工具(单帧/视频时间点,多 ID 查表)
+│   └── codebook.json          码本 v2:works[] 多作品(ID↔版权文本;兼容旧单作品格式)
+├── webui\                     【WebUI 工作台】(本机自用,http://127.0.0.1:8765)
+│   ├── app.py                 FastAPI 后端(GPU 串行队列/任务持久化/码本管理)
+│   ├── engine_embed.py        嵌入子进程(JSON 行进度,参数化作品文本)
+│   ├── engine_worker.py       提取常驻进程(模型预热,秒级响应,stdin/stdout JSON 行协议)
+│   ├── store.py               码本存储(tools/codebook.json v2,旧格式自动迁移)
+│   ├── static\                前端(无框架 SPA,朱印视觉)
+│   ├── data\                  运行数据(任务历史 jobs.json、日志)
+│   └── 启动WebUI.bat          双击启动
+├── experiments\               选型实验脚本(s1~s9)+ 过程数据(out\),不影响交付
+├── third_party\watermark-anything\   Meta 官方库 + 模型权重 wam_mit.pth(377MB)
+├── docs\                      需求书 / 验收报告 / 工具使用说明 / 交接文档
+├── environment.yml            conda 环境清单
+└── wm_env.sh                  代理与路径环境(每条命令 source)
+```
+
+## 常用操作
+
+```bash
+# 环境准备(一次性,见 environment.yml)
+conda create -n wm2 python=3.10 -y && conda activate wm2
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+pip install -r third_party/watermark-anything/requirements.txt
+pip install fastapi "uvicorn[standard]" python-multipart   # WebUI 依赖
+
+# WebUI 工作台(推荐):双击 webui\启动WebUI.bat,或
+source wm_env.sh && python webui/app.py     # -> http://127.0.0.1:8765
+
+# 提取水印(取证,命令行与 WebUI 共用同一份码本)
+python tools/extract_wm.py video "output/DeepSeek+DSH_已加水印_v2.mp4" --t 100
+python tools/extract_wm.py image "某张截图.png"
+
+# 重新打水印(把原始视频/图片直接丢进 data\ 根目录)
+source wm_env.sh && python src/run_all.py            # 全流程
+python src/run_all.py --skip-embed                   # 只重跑验收
+python src/embed_video.py --crf 14                   # 只嵌视频(data\ 下有多个视频时加 --input 指定)
+python src/embed_images.py                           # 只嵌图片
+```
+
+## 输入 / 输出约定
+
+- **输入**:原始视频/图片直接放进 `data\` 根目录(扁平,不限文件名/分辨率/帧率)。
+  `data\` 下只有一个视频时自动识别;有多个时用 `--input` 指定要嵌哪个。
+- **输出**:一切成品只写 `output\`,命名规则为 `<源文件名>_已加水印.mp4/.png`,meta 同名。
+  实验过程的中间产物不进 `output\`,在 `experiments\out\`。
+- 注意:验收套件 `src/verify.py` 的攻击几何按 1080p60 设计,其他规格素材建议只做核心项抽查,
+  或改 `src\common.py` 的 `W/H/FPS` 后重跑。
+
+## 水印方案速览
+
+- 模型:WAM `wam_mit.pth`(MIT),逐帧嵌 32-bit ID `96e6955d` = 版权文本 SHA-256 前 4 字节;
+  提取命中码本即输出完整版权文本(见 codebook.json)。
+- 提取工具内置两步式策略链:全帧 → 镜像 → 亮度/色相反补偿网格 → 定位框裁剪 → 3×3 多窗 → 角度搜索。
+- 已知边界:组合搬运一条龙在 UI 录屏类内容上未达(详见 docs/验收报告.md 第 5 节)。

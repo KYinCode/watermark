@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>wm2 水印工作台</title>
+<link rel="stylesheet" href="/static/style.css?v=__VER__">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='6' fill='%23C4401C' stroke='%23211A10' stroke-width='2'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='%23FBF3EA' font-family='serif' font-weight='bold'%3E印%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="seal">印</div>
+      <div><h1>水印工作台</h1><span>wm2 · 127.0.0.1</span></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div class="row" style="justify-content:space-between">
+        <span class="muted">GPU 队列</span>
+        <span><span class="qbadge" id="qbadge">0</span></span>
+      </div>
+      <div class="row" style="justify-content:space-between;margin-top:6px">
+        <span class="muted" id="foot-gpu">GPU 检测中…</span>
+        <span class="dot" id="foot-dot"></span>
+      </div>
+    </div>
+  </aside>
+  <main><div class="wrap" id="main"></div></main>
+</div>
+<div id="toasts"></div>
+<div id="modal-root"></div>
+<script src="/static/app.js?v=__VER__"></script>
+</body>
+</html>

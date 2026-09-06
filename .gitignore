@@ -1,0 +1,19 @@
+# ===== 大文件 / 可再生成素材(本地保留,不入库) =====
+data/
+hf_home/
+third_party/watermark-anything/checkpoints/
+
+# 成品区:只保留验收证据(小体积 JSON / 样本图),排除成品视频与图片
+output/*
+!output/verification/
+!output/samples/
+!output/成品_meta.json
+
+# 实验过程数据(选型实验的中间产物)
+experiments/out/
+
+# ===== 运行时数据与缓存 =====
+__pycache__/
+*.pyc
+webui/data/
+.vscode/
