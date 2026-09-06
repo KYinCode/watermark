@@ -171,7 +171,7 @@ def fetch_ffmpeg():
 
 
 def ask_proxy():
-    print("      镜像和直连都失败了。最后试你的代理:")
+    print("      自动线路(直连/本机代理/镜像)都失败了。最后试你的代理:")
     print("      如果你电脑开着 Clash/v2rayN 之类,把它的代理地址抄进来,例: http://127.0.0.1:7890")
     try:
         return input("      不知道/没有代理就直接回车,给你手动下载的办法: ").strip()
@@ -237,19 +237,52 @@ def fix_ffmpeg():
     fetch_ffmpeg()
 
 
+def robust_pip(name, args, mirror_args=(), manual="重跑本脚本,或配好网络后再试"):
+    """pip 安装统一保底链(与 ffmpeg 同款五级):直连 -> 本机代理(探测) -> 镜像 -> 问端口(3次) -> 放弃"""
+    attempts = [("直连", args, None)]
+    proxy = detect_proxy()
+    if proxy:
+        attempts.append((f"本机代理 {proxy}", args, proxy))
+    if mirror_args:
+        attempts.append(("镜像", mirror_args, None))
+    for label, a, px in attempts:
+        print(f"      尝试{label}...")
+        if pip("install", *a, *(["--proxy", px] if px else [])):
+            return True
+        print(f"      {label} 失败")
+    wrong = 0
+    while wrong < 3:
+        addr = ask_proxy()
+        if not addr:
+            break
+        if pip("install", "--proxy", addr, *args):
+            return True
+        wrong += 1
+        print(f"      该地址不行(剩 {3 - wrong} 次机会)")
+    print(f"      {BAD} {name} 自动安装失败。{manual}")
+    return False
+
+
 def fix_deps():
     if py_kind() == "other":
         print("  修复中止: 当前是系统 Python,不往里装。请先双击 webui\\安装环境.bat 生成项目内环境")
         return
     if importlib.util.find_spec("torch") is None:
-        print("      pip 装 torch cu124(约 2.5GB,耐心)...")
-        if not pip("install", "torch==2.5.1", "torchvision==0.20.1",
-                   "--index-url", "https://download.pytorch.org/whl/cu124"):
-            print("      torch 官方源没装上(网络原因);重跑本脚本可续,或配好代理后再试")
-    print("      pip 补齐其余依赖...")
-    if not pip("install", *[n for n, _ in PIP_CORE]):
-        print(f"      默认 PyPI 源失败,换清华镜像重试...")
-        pip("install", "-i", PIP_MIRROR, *[n for n, _ in PIP_CORE])
+        print("      装 torch cu124(约 2.5GB,耐心)...")
+        robust_pip(
+            "torch",
+            ["torch==2.5.1", "torchvision==0.20.1",
+             "--index-url", "https://download.pytorch.org/whl/cu124"],
+            mirror_args=["torch==2.5.1+cu124", "torchvision==0.20.1+cu124",
+                         "-f", "https://mirrors.aliyun.com/pytorch-wheels/cu124/"],
+            manual="手动办法:浏览器下载 https://mirrors.aliyun.com/pytorch-wheels/cu124/ 里 "
+                   "torch-2.5.1+cu124-cp310-cp310-win_amd64.whl 和对应 torchvision,"
+                   f"用 {sys.executable} -m pip install 文件名 安装")
+    print("      补齐其余依赖...")
+    robust_pip(
+        "依赖",
+        [n for n, _ in PIP_CORE],
+        mirror_args=["-i", PIP_MIRROR, *[n for n, _ in PIP_CORE]])
 
 
 def confirm():
