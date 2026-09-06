@@ -31,7 +31,25 @@ if not exist "%ROOT%\runtime\py310.zip" (
   echo [引导] 官方源不通,换华为云镜像...
   powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.huaweicloud.com/python/3.10.11/python-3.10.11-embed-amd64.zip' -OutFile '%ROOT%\runtime\py310.zip'"
 )
-if not exist "%ROOT%\runtime\py310.zip" (echo 两条源都下载失败,请检查网络后重试 & pause & exit /b 1)
+if not exist "%ROOT%\runtime\py310.zip" goto py_ask
+goto py_ok
+
+:py_ask
+echo 两条自动线路都失败了。若你开着代理(Clash/v2rayN 等),把地址抄进来,例: http://127.0.0.1:7890
+set "PX="
+set /p PX=不知道就直接回车,给你手动办法:
+if "%PX%"=="" goto py_manual
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Proxy '%PX%' -Uri 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip' -OutFile '%ROOT%\runtime\py310.zip'"
+if exist "%ROOT%\runtime\py310.zip" goto py_ok
+echo 代理线路也没成功。
+
+:py_manual
+echo 手动办法:浏览器下载 https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip
+echo 放到 %ROOT%\runtime\py310.zip ,然后重新双击本脚本
+pause
+exit /b 1
+
+:py_ok
 powershell -NoProfile -Command "Expand-Archive -Force '%ROOT%\runtime\py310.zip' '%ROOT%\runtime\python'"
 del "%ROOT%\runtime\py310.zip"
 powershell -NoProfile -Command "(Get-Content '%ROOT%\runtime\python\python310._pth') -replace '#import site','import site' | Set-Content '%ROOT%\runtime\python\python310._pth'"
