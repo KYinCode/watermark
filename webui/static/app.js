@@ -1044,7 +1044,7 @@ function compareDrawer(f) {
     <div class="warn-box hidden" id="cmp-afall" style="margin-top:10px">原片格式浏览器无法直接播放(常见于 HEVC 未装系统解码扩展)。
       <button class="btn sm" id="cmp-tc">生成浏览器预览版</button> <span class="small" id="cmp-tcst"></span>
       <div class="small muted">纯 CPU 转码一次并缓存(不占用 GPU 队列),完成后自动替换左屏。</div></div>
-    <div class="small muted" style="margin-top:8px">进度条只负责取时间:拖动/点击后两路视频同时暂停、并行解码到目标帧,两路都解完才继续播放(解码期间播放键禁用);播放中漂移用变速平滑追(0.8×~1.2×),偏差过大才重新跳转。「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
+    <div class="small muted" style="margin-top:8px">进度条只负责取时间:拖动/点击后两路视频同时暂停、并行解码到目标帧,两路都解完且缓冲攒够才继续播放(等待期间播放键禁用);播放中漂移用变速平滑追(0.8×~1.2×),偏差过大只校正右屏不打断左屏。「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
   drawer(`对比 · ${f.name}`, body, { mode: "sheet", wide: true, width: "calc(100vw - 24px)" });
 
   const $id = s => $(s, body);
@@ -1065,11 +1065,18 @@ function compareDrawer(f) {
   const updDiffSoon = debounce(updDiff, 260);
   const syncNow = () => { if (b.readyState > 0 && !b.seeking && !near(b.currentTime, a.currentTime)) b.currentTime = a.currentTime; };
   b.addEventListener("loadedmetadata", () => syncNow());   // 右屏装载完成后再对齐一次(覆盖装载期赋值失效)
-  // —— 解码闸门:跳转时两路强制暂停、并行直跳;两路都解出目标帧(seeked + readyState≥2)才放行 ——
-  // 等待期间播放键禁用(点击无效);放行时若跳转前在播则自动续播。
+  // —— 解码闸门:跳转时两路强制暂停、并行直跳;两路都解出目标帧 且 缓冲预读攒够(≥2s)才放行 ——
+  // 等待期间播放键禁用(点击无效);放行时若跳转前在播则自动续播;6s 兜底强制放行。
   let gate = 0, gateWasPlaying = false, gateGuard = 0;
-  const gateOpen = () => {
+  const bufAhead = v => {
+    for (let i = 0; i < v.buffered.length; i++)
+      if (v.buffered.start(i) - 0.05 <= v.currentTime && v.currentTime <= v.buffered.end(i))
+        return v.buffered.end(i) - v.currentTime;
+    return 0;
+  };
+  const gateOpen = force => {
     if (gate > 0 || a.seeking || b.seeking || a.readyState < 2 || b.readyState < 2) return;   // 任一路没解完就继续等
+    if (!force && Math.min(bufAhead(a), bufAhead(b)) < 2 && (a.duration || 0) - a.currentTime > 5) return;   // 缓冲没攒够:先攒粮防 underrun
     clearTimeout(gateGuard);
     playBtn.disabled = false;
     playBtn.textContent = a.paused ? "▶ 播放" : "⏸ 暂停";
@@ -1079,7 +1086,7 @@ function compareDrawer(f) {
   const seekGate = () => { if (gate > 0) gate--; gateOpen(); };
   a.addEventListener("seeked", seekGate);
   b.addEventListener("seeked", seekGate);
-  ["loadeddata", "canplay"].forEach(ev => { a.addEventListener(ev, gateOpen); b.addEventListener(ev, gateOpen); });
+  ["loadeddata", "canplay", "progress"].forEach(ev => { a.addEventListener(ev, gateOpen); b.addEventListener(ev, gateOpen); });
   // 双视频并行直跳同一时间,互不等待
   const seekBoth = t => {
     const dur = a.duration || f.duration || 0;
@@ -1092,7 +1099,7 @@ function compareDrawer(f) {
     playBtn.disabled = true; playBtn.textContent = "⏳ 解码中…";
     clearTimeout(gateGuard);
     gate = (needA ? 1 : 0) + (needB ? 1 : 0);      // 等两路的 seeked
-    gateGuard = setTimeout(() => { gate = 0; gateOpen(); }, 3000);   // 兜底:信号丢失也强制放行
+    gateGuard = setTimeout(() => { gate = 0; gateOpen(true); }, 6000);   // 兜底:6s 强制放行(宁轻微卡不等死)
     if (needA) a.currentTime = t;
     if (needB) b.currentTime = t;
     beginSettle();
@@ -1121,6 +1128,8 @@ function compareDrawer(f) {
   a.addEventListener("play", () => { playBtn.textContent = "⏸ 暂停"; });
   a.addEventListener("playing", () => { beginSettle(); if (!a.paused && b.paused && !sliderDrag && !b.seeking) b.play(); });
   a.addEventListener("waiting", () => { if (!a.paused && !b.paused) b.pause(); });   // 左屏供流停顿,右屏同步冻结
+  b.addEventListener("waiting", () => { if (!b.paused && !a.paused && gate === 0 && !sliderDrag) a.pause(); });   // 右屏卡流,左屏同步冻结(双慢即停)
+  b.addEventListener("playing", () => { if (gate === 0 && !sliderDrag && !a.seeking && !b.seeking && a.paused && !b.paused) a.play(); });   // 右屏恢复,左屏跟着恢复
   a.addEventListener("pause", () => { b.pause(); b.playbackRate = a.playbackRate; syncNow(); if (gate === 0) playBtn.textContent = "▶ 播放"; updDiffSoon(); });
   a.addEventListener("ratechange", () => { b.playbackRate = a.playbackRate; });
   a.addEventListener("timeupdate", () => {
@@ -1145,7 +1154,8 @@ function compareDrawer(f) {
         : drift > 0.033 ? a.playbackRate * 0.8
         : a.playbackRate;
       if (target == null) {
-        if (b.readyState > 0) seekBoth(a.currentTime);      // 真失步:两路并行直跳拉回
+        if (b.readyState > 0 && !b.seeking) b.currentTime = a.currentTime;   // 真失步:只动右屏(领先回退/落后快进),不打断左屏游程
+        beginSettle();
       }
       else if (Math.abs(b.playbackRate - target) > 1e-6) b.playbackRate = target;
     }
