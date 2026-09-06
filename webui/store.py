@@ -59,10 +59,7 @@ def add_work(name: str, text: str, note: str = "") -> dict:
         raise CodebookError("作品名称不能为空")
     id_hex = f"{C.derive_id(text):08x}"
     with LOCK:
-        cb = json.loads(C.CODEBOOK.read_text(encoding="utf-8")) if C.CODEBOOK.exists() else \
-            {"version": 2, "scheme": _SCHEME, "works": []}
-        if "works" not in cb:
-            raise CodebookError("码本格式异常,请先备份 tools/codebook.json 后手工检查")
+        cb = load()  # 含 v1 自动迁移:add_work 作为首个调用也不会报"码本格式异常"(LOCK 可重入)
         for w in cb["works"]:
             if w["id_hex"] == id_hex:
                 raise CodebookError(f"ID 冲突:该文本派生出的 ID {id_hex} 已被作品「{w['name']}」占用,请修改文本")

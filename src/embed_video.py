@@ -29,6 +29,18 @@ def read_exact(stream, nbytes):
     return bytes(buf)
 
 
+def out_name(stem: str, ext: str) -> Path:
+    """<源名>_已加水印<ext>,重名自动 _v2.._v99(与引擎版一致)"""
+    cand = C.OUTPUT / f"{stem}_已加水印{ext}"
+    k = 2
+    while cand.exists():
+        cand = C.OUTPUT / f"{stem}_已加水印_v{k}{ext}"
+        k += 1
+        if k > 99:
+            raise RuntimeError("成品重名过多,请清理 output\\")
+    return cand
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=str, default=None, help="源视频;默认取 data\ 下唯一视频")
@@ -42,7 +54,7 @@ def main():
 
     src = Path(args.input) if args.input else C.one_video()
     fps, w, h, total_frames = C.probe(src)
-    out_path = Path(args.out) if args.out else C.OUTPUT / (src.stem + "_已加水印.mp4")
+    out_path = Path(args.out) if args.out else out_name(src.stem, ".mp4")
     C.OUTPUT.mkdir(exist_ok=True)
     print(f"[embed] 源: {src.name}  {w}x{h}@{fps:.0f}fps  帧数: {total_frames or '未知'}", flush=True)
     B = 8
@@ -114,8 +126,14 @@ def main():
             if len(batch) < B:
                 break
     finally:
-        enc.stdin.close()
-        dec.stdout.close()
+        try:
+            enc.stdin.close()
+        except Exception:  # 原异常优先:管道已断时 close 抛 BrokenPipeError 会掩盖真正错误
+            pass
+        try:
+            dec.stdout.close()
+        except Exception:
+            pass
         rc_dec = dec.wait()
         rc_enc = enc.wait()
 
@@ -138,6 +156,9 @@ def main():
     ok = int(st["nb_read_frames"]) == n_done
     print(f"[verify] 帧数={st['nb_read_frames']} (期望 {n_done}) {'✓' if ok else '✗'} "
           f"{st['codec_name']} {st['width']}x{st['height']} @{st['avg_frame_rate']} {size_mb:.0f} MB", flush=True)
+    if not ok:
+        # 非零退出码:run_all 的 assert rc==0 依赖它拦截坏成品(旧实现只打印 ✗ 会放行)
+        raise SystemExit(f"[verify] 帧数校验失败: 成品 {st['nb_read_frames']} 帧 != 嵌入 {n_done} 帧")
     meta = dict(source=str(src), out=str(out_path), frames=int(st["nb_read_frames"]), crf=args.crf,
                 wall_s=wall, embed_ms=1000 * t_embed / max(n_done, 1),
                 psnr_mean=float(psnrs.mean()), psnr_min=float(psnrs.min()),

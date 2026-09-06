@@ -137,10 +137,11 @@ def load_wam(scaling_w: float = 2.0, ckpt_name: str = "wam_mit.pth"):
     augmenter = Augmenter(**acfg)
     try:
         attenuation = JND(**tcfg[args.attenuation], preprocess=unnormalize_img, postprocess=normalize_img)
-    except Exception:
+    except Exception as e:
+        print(f"[warn] JND 配置加载失败({e});水印退化为无 JND 掩码的均匀嵌入,画质与鲁棒性将改变", flush=True)
         attenuation = None
     wam = Wam(embedder, extractor, augmenter, attenuation, args.scaling_w, args.scaling_i)
-    sd = torch.load(REPO / "checkpoints" / ckpt_name, map_location="cpu")
+    sd = torch.load(REPO / "checkpoints" / ckpt_name, map_location="cpu", weights_only=True)
     wam.load_state_dict(sd)
     wam.scaling_w = scaling_w
     wam = wam.eval().cuda()
@@ -166,11 +167,11 @@ def unnorm_to_uint8(t):
     return (y * 255.0).round().byte().permute(0, 2, 3, 1).cpu().numpy()
 
 
-def read_frames(path, start_frame=0, n=None, w=W, h=H):
+def read_frames(path, start_frame=0, n=None, w=W, h=H, fps=FPS):
     """ffmpeg 解码 -> uint8 RGB (n,h,w,3)。start_frame 用输出寻址,帧号精确。"""
     cmd = [FF, "-hide_banner", "-loglevel", "error"]
     if start_frame > 0:
-        cmd += ["-ss", f"{(start_frame - 0.5) / 60.0:.6f}"]
+        cmd += ["-ss", f"{(start_frame - 0.5) / fps:.6f}"]
     cmd += ["-i", str(path)]
     if n is not None:
         cmd += ["-frames:v", str(n)]
