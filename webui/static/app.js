@@ -367,6 +367,11 @@ PAGES.embed = main => {
             <div class="row" style="margin-top:10px"><input type="range" id="em-sw" min="1" max="4" step="0.1" value="2" style="flex:1">
               <b class="mono" id="em-swv">2.0</b></div>
             <div class="hint" id="em-swhint"></div></div>
+          <div class="field"><label>色彩回补 <span class="muted small">(视频专属:自动抵消打水印带来的泛黄/泛紫,2026-09-06 小样实测)</span></label>
+            <div class="row"><label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+              <input type="checkbox" id="em-comp" checked> 开启(随强度自动配量)</label>
+              <b class="mono" id="em-compv">0.50</b></div>
+            <div class="hint">打水印前红绿各预减 N 级(等效补蓝;不动蓝色通道,防白底 255 削顶)。图片走无损链路无需回补</div></div>
         </div>
         <div>
           <div class="result-plate" id="em-summary"></div>
@@ -374,10 +379,10 @@ PAGES.embed = main => {
           <div class="hint" style="margin-top:8px">提交后任务进入 GPU 串行队列;完成后自动抽帧自检,成品写入 output\\</div>
         </div>
       </div></div>`;
-  const st = { works: [], workId: null, srcs: [], preset: "std", sw: 2.0 };
+  const st = { works: [], workId: null, srcs: [], preset: "std", sw: 2.0, compOn: true };
 
   const PRESETS = [
-    ["low", "隐形优先", "视频 1.5 / 图片 2.0", "画质极致。鲁棒性下降,自行评估(10bit 小样实测 crf23 重编码仍 ~100%)"],
+    ["low", "隐形优先", "视频 1.5 / 图片 2.0", "画质极致(PSNR ~40-42.5)。8bit 小样实测:直解+crf23 重编码 100%,截图可用(2026-09-06)"],
     ["std", "标准", "视频 2.0 / 图片 2.5", "全部 14 项验收达标的档位;日常出稿选这个"],
     ["rob", "鲁棒优先", "视频 3.0 / 图片 3.0", "组合搬运等严苛场景;代价 PSNR 降至约 35(低于 36 达标线)"],
   ];
@@ -391,6 +396,8 @@ PAGES.embed = main => {
     });
   };
   const isVideoSrc = () => st.srcs.length && st.srcs.some(s => /\.(mp4|mov|mkv|avi|flv|webm)$/i.test(s.name));
+  // 色彩回补量随强度线性配量(实测锚点: sw1.5→0.4, sw2.0→0.5; 见 experiments/t3_compensate)
+  const compFor = sw => +Math.min(0.8, Math.max(0.3, 0.4 + 0.2 * (sw - 1.5))).toFixed(2);
   const syncHint = () => {
     const img = st.srcs.length && st.srcs.every(s => /\.(png|jpe?g)$/i.test(s.name));
     const delta = (20 * Math.log10(st.sw / 2.0)).toFixed(1);
@@ -398,6 +405,7 @@ PAGES.embed = main => {
     $("#em-swhint").innerHTML = img
       ? `图片模式建议 ${st.sw < 2 ? 2.0 : st.sw > 2.9 ? 3.0 : 2.5}(预设档已按视频/图片区分)。相对标准档画质变化 ≈ <b class="mono">${delta} dB</b>`
       : `相对标准档(2.0)画质变化 ≈ <b class="mono">${delta} dB</b>(${delta < 0 ? "更低" : "更高"})`;
+    $("#em-compv").textContent = st.compOn ? compFor(st.sw).toFixed(2) : "关";
     renderSummary();
   };
   const renderSummary = () => {
@@ -410,6 +418,7 @@ PAGES.embed = main => {
         <dt>素材</dt><dd>${nV ? `${nV} 个视频` : ""}${nV && nI ? " + " : ""}${nI ? `${nI} 张图片` : ""}${!st.srcs.length ? '<span class="muted">未选择</span>' : ""}</dd>
         <dt>画质</dt><dd>crf ${$("#em-crf").value}</dd>
         <dt>强度</dt><dd>scaling_w ${st.sw.toFixed(1)}</dd>
+        <dt>回补</dt><dd>${nV ? (st.compOn ? `comp ${compFor(st.sw)} (红绿预减)` : "关闭") : (nI ? "图片无需" : `comp ${compFor(st.sw)} (红绿预减)`)}</dd>
       </div>
       ${nV && nI ? '<div class="warn-box">视频与图片请分开提交</div>' : ""}`;
   };
@@ -429,6 +438,7 @@ PAGES.embed = main => {
   };
   $("#em-crf").oninput = e => { $("#em-crfv").textContent = e.target.value; renderSummary(); };
   $("#em-sw").oninput = e => { st.sw = +e.target.value; st.preset = "custom"; renderPresets(); syncHint(); };
+  $("#em-comp").onchange = e => { st.compOn = e.target.checked; syncHint(); };
   $("#em-work").onchange = e => { st.workId = e.target.value; renderWorkInfo(); };
   $("#em-reload").onclick = () => loadWorks(st.workId).catch(e => toast(e.message, "err"));
   $("#em-newwork").onclick = () => workModal(null, () => loadWorks(null).then(() => {
@@ -445,7 +455,7 @@ PAGES.embed = main => {
     if (nV && nI) return toast("视频与图片请分开提交", "err");
     $("#em-submit").disabled = true;
     try {
-      const made = await post("/api/jobs/embed", { kind: nV ? "video" : "images", sources: st.srcs.map(s => s.path), work_id: st.workId, crf: +$("#em-crf").value, scaling_w: st.sw });
+      const made = await post("/api/jobs/embed", { kind: nV ? "video" : "images", sources: st.srcs.map(s => s.path), work_id: st.workId, crf: +$("#em-crf").value, scaling_w: st.sw, comp: nV && st.compOn ? compFor(st.sw) : 0 });
       toast(`已入队 ${made.length} 个任务`, "ok");
       refreshQueue();
       $("#em-queue").scrollIntoView({ behavior: "smooth" });
@@ -1298,7 +1308,7 @@ async function embedDetail(id, onRefresh) {
     body.innerHTML = `
       <div class="kv">
         <dt>任务</dt><dd>${esc(j.label)}</dd><dt>状态</dt><dd>${chip(j.status)}</dd>
-        <dt>参数</dt><dd class="small mono">crf ${j.params?.crf} · scaling_w ${j.params?.scaling_w}</dd>
+        <dt>参数</dt><dd class="small mono">crf ${j.params?.crf} · scaling_w ${j.params?.scaling_w}${j.params?.comp ? ` · comp ${j.params.comp}` : ""}</dd>
         <dt>创建 / 开始</dt><dd class="small">${esc(j.created_at || "")} / ${esc(j.started_at || "—")}</dd></div>
       ${j.progress?.total ? `<div style="margin:10px 0">${bar(j.progress.done, j.progress.total, j.status === "queued")}<div class="small muted">${esc(j.progress.phase || "")} ${j.progress.done}/${j.progress.total} 帧</div></div>` : ""}
       ${j.error ? `<div class="warn-box red">${esc(j.error)}</div>` : ""}
