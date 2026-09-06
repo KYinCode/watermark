@@ -62,9 +62,9 @@ def read_exact(stream, nbytes):
     return bytes(buf) if buf else None
 
 
-def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h):
+def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h, fps):
     """对成品抽 1 帧直解自检(R2.6)"""
-    frames = C.read_frames(product_path, frame_no, 1, w=w, h=h)
+    frames = C.read_frames(product_path, frame_no, 1, w=w, h=h, fps=fps)
     if not frames:
         return dict(hit=False, acc=0.0, note="抽帧失败")
     accs, _, _ = C.decode_batch_stats(wam, frames, 1, expect_bits, report_ms=False)
@@ -158,7 +158,7 @@ def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path, comp: f
         raise RuntimeError(f"帧数校验失败: 成品 {nb} 帧 != 嵌入 {n_done} 帧")
 
     # 自检: 中段抽 1 帧直解(R2.6)
-    sc = selfcheck_frame(wam, part, expect_bits, n_done // 2, w, h)
+    sc = selfcheck_frame(wam, part, expect_bits, n_done // 2, w, h, fps)
     emit(dict(type="selfcheck", index=0, **sc))
     return dict(frames=n_done, psnr=psnr_stat, wall_s=round(wall, 1), w=w, h=h, fps=fps)
 

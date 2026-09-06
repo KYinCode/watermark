@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """成品验收: 对最终成品视频重测需求书全部量化项(两段各 660 帧)。
-用法: python pipeline/pipeline_verify.py --product DeepSeek+DSH_已加水印_v2.mp4 [--segment 5000|--segment 17800]
+用法: python src/verify.py --product DeepSeek+DSH_已加水印_v2.mp4 --start 5000 [--start 17800]
 """
 import argparse
 import json
@@ -58,20 +58,23 @@ def main():
     product = Path(args.product) if args.product else max(
         C.OUTPUT.glob("*_已加水印*.mp4"), key=lambda q: q.stat().st_mtime)
     msg_np = C.wm_msg_bits()
+    wam = C.load_wam(scaling_w=2.0)  # 只加载一次,多段共用(旧实现每段各重载,浪费一次 ~10s)
     for start in args.start:
-        run_segment(product, start, msg_np, wam=None)
+        run_segment(product, start, msg_np, wam)
 
 
-def run_segment(product, args_start, msg_np, wam=None):
-    wam = wam or C.load_wam(scaling_w=2.0)
+def run_segment(product, args_start, msg_np, wam):
     seg_tag = f"seg{args_start}"
     N_ = N
     results = []
 
     # 抽取成品段为中间 mp4(与源段对齐, 帧精确)
     prod_seg = TMP / f"prod_{seg_tag}.mp4"
+    part = TMP / f"prod_{seg_tag}.mp4.part"
     if not prod_seg.exists():
-        C.encode_frames(C.read_frames(product, args_start, N), prod_seg, 14)  # 近无损中转,只用于稳定读写
+        # 先写 .part 再改名:中断残留不会被当作有效缓存(旧实现"存在即复用"会在坏数据上测所有攻击项)
+        C.encode_frames(C.read_frames(product, args_start, N), part, 14)  # 近无损中转,只用于稳定读写
+        part.replace(prod_seg)
     print(f"[verify] {product.name} @ 帧{args_start}-{args_start + N - 1}", flush=True)
 
     # 1) 1:1 基线(成品直解,精确 660 帧列表,不经中转)

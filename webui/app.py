@@ -8,6 +8,7 @@
   - 可靠性     -> 任务/进度持久化 webui/data/jobs.json;重启后 running->interrupted,可重新排队;
                   启动时清理 output/.part-* 半成品
 """
+import hashlib
 import json
 import math
 import os
@@ -72,7 +73,8 @@ def check_media_path(p: Path, must_exist=True):
 def under_proj(p: Path) -> bool:
     try:
         rp = p.resolve()
-        return str(rp).startswith(str(PROJ.resolve()))
+        # 补路径分隔符: 否则 F:\Project\watermark2 也会被当作 F:\Project\watermark 前缀放行
+        return str(rp).startswith(str(PROJ.resolve()) + os.sep)
     except OSError:
         return False
 
@@ -116,7 +118,8 @@ class JobStore:
         if JOBS_JSON.exists():
             try:
                 self.jobs = json.loads(JOBS_JSON.read_text(encoding="utf-8"))["jobs"]
-            except Exception:
+            except Exception as e:
+                print(f"[warn] jobs.json 解析失败({e});历史任务列表已清空", flush=True)
                 self.jobs = []
         # 重启恢复:running -> interrupted(允许重新排队);清理半成品
         changed = False
@@ -729,7 +732,8 @@ def api_frame(path: str, t: float = 0.0):
     check_media_path(p)
     if p.suffix.lower() not in C.VIDEO_EXTS:
         raise HTTPException(400, "仅视频可取预览帧")
-    key = (str(p), round(t * 2) / 2)
+    t = round(t * 2) / 2  # 缓存键与解码用同一取整值,否则先取 t=1.3 再取 t=1.5 会拿到 1.3s 的帧
+    key = (str(p), t)
     if key in _frame_cache:
         return Response(_frame_cache[key], media_type="image/jpeg")
     r = subprocess.run(
@@ -754,7 +758,8 @@ def _check_preview_path(p: Path):
     if not p.exists():
         raise HTTPException(404, "文件不存在")
     rp = str(p.resolve())
-    if not (rp.startswith(str(C.DATA.resolve())) or rp.startswith(str(C.OUTPUT.resolve()))):
+    if not (rp.startswith(str(C.DATA.resolve()) + os.sep) or
+            rp.startswith(str(C.OUTPUT.resolve()) + os.sep)):
         raise HTTPException(403, "仅允许预览 data\\ 与 output\\ 内文件")
     if p.suffix.lower() not in MEDIA_EXTS:
         raise HTTPException(400, "不支持的媒体格式")
@@ -771,6 +776,7 @@ def api_raw(path: str):
     return FileResponse(p, media_type=V_MIME.get(ext, "application/octet-stream"))
 
 
+# 成品库探测缓存((name, mtime, size) 键);_decode_frame_rgb 亦复用此全局 dict(键为路径)
 _probe_cache: dict = {}
 
 
@@ -780,6 +786,8 @@ def _decode_frame_rgb(p: Path, t: float):
     key = str(p)
     info = _probe_cache.get(key)
     if info is None:
+        if len(_probe_cache) > 128:  # 文件删除后条目会残留,限量防累积
+            _probe_cache.clear()
         info = ffprobe_full(p)
         _probe_cache[key] = info
     w, h = info["w"], info["h"]
@@ -816,12 +824,19 @@ def api_diff(path: str, source: str, t: float = 0.0, amp: float = 8.0):
 # ---- 浏览器放不了的源(如 HEVC)一次性 CPU 转码缓存(不占 GPU) ----
 PREVIEW_CACHE = DATA_DIR / "preview_cache"
 PREVIEW_CACHE.mkdir(parents=True, exist_ok=True)
+for _f in PREVIEW_CACHE.iterdir():  # 启动清理:转码预览为一次性产物,旧命名/被删源的孤儿文件全部清除
+    try:
+        _f.unlink()
+    except OSError:
+        pass
 _prev_status: dict = {}
 _prev_lock = threading.Lock()
 
 
 def _preview_cache_path(p: Path) -> Path:
-    return PREVIEW_CACHE / f"{p.stem}_{abs(hash(str(p))) % 99999:05d}.mp4"
+    # 进程级 hash 随重启变化(旧缓存变孤儿);改用路径 md5 稳定前缀
+    h = hashlib.md5(str(p).encode("utf-8")).hexdigest()[:10]
+    return PREVIEW_CACHE / f"{p.stem}_{h}.mp4"
 
 
 def _transcode_worker(p: Path, out: Path):
@@ -1011,9 +1026,6 @@ def api_job_export(job_id: str):
 # ---------------------------------------------------------------- API:成品库
 
 
-_probe_cache = {}
-
-
 @app.get("/api/products")
 def api_products():
     items = []
@@ -1028,6 +1040,8 @@ def api_products():
             continue
         key = (f.name, st.st_mtime, st.st_size)
         if key not in _probe_cache:
+            if len(_probe_cache) > 128:  # 文件删除后条目会残留,限量防累积
+                _probe_cache.clear()
             try:
                 info = ffprobe_full(f)
             except HTTPException:

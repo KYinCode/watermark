@@ -221,8 +221,12 @@ function sourcePicker({ id, multi = false, accept = "media", onChange }) {
         if (xhr.status !== 200) { toast(`上传失败: ${xhr.responseText || xhr.status}`, "err"); return next(); }
         const r = JSON.parse(xhr.responseText);
         if (!multi && st.sources.length) st.sources = [];
-        st.sources.push({ path: r.path, name: r.name, size_mb: r.size_mb });
-        onChange(st.sources); renderList(); next();
+        const src = { path: r.path, name: r.name, size_mb: r.size_mb };
+        st.sources.push(src);
+        // 上传后补 probe:查水印页的时间条/时长渲染依赖 s.probe,旧实现上传视频无时间选择(只能 t=0 提交)
+        api("/api/probe?path=" + encodeURIComponent(r.path))
+          .then(p => { src.probe = p; onChange(st.sources); renderList(); next(); })
+          .catch(() => { onChange(st.sources); renderList(); next(); });
       };
       xhr.onerror = () => { toast(`上传失败: ${f.name}`, "err"); next(); };
       xhr.open("POST", `/api/upload?name=${encodeURIComponent(f.name)}`);
@@ -395,7 +399,6 @@ PAGES.embed = main => {
       $("#em-sw").value = st.sw; renderPresets(); syncHint();
     });
   };
-  const isVideoSrc = () => st.srcs.length && st.srcs.some(s => /\.(mp4|mov|mkv|avi|flv|webm)$/i.test(s.name));
   // 色彩回补量随强度线性配量(实测锚点: sw1.5→0.4, sw2.0→0.5; 见 experiments/t3_compensate)
   const compFor = sw => +Math.min(0.8, Math.max(0.3, 0.4 + 0.2 * (sw - 1.5))).toFixed(2);
   const syncHint = () => {
