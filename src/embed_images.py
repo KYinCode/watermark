@@ -13,18 +13,6 @@ import common as C
 SCALING_W = 2.5
 
 
-def out_name(stem: str) -> Path:
-    """<源名>_已加水印.png,重名自动 _v2.._v99(与引擎版一致;成品统一无损 PNG,不随源格式)"""
-    cand = C.OUTPUT / f"{stem}_已加水印.png"
-    k = 2
-    while cand.exists():
-        cand = C.OUTPUT / f"{stem}_已加水印_v{k}.png"
-        k += 1
-        if k > 99:
-            raise RuntimeError("成品重名过多,请清理 output\\")
-    return cand
-
-
 def main():
     wam = C.load_wam(scaling_w=SCALING_W)
     msg_np = C.wm_msg_bits()
@@ -36,7 +24,7 @@ def main():
         with torch.no_grad():
             out = wam.embed(C.norm_frames(img[None]), msg)
         wm = C.unnorm_to_uint8(out["imgs_w"])[0]
-        dst = out_name(p.stem)
+        dst = C.out_name(p.stem, ".png")  # 成品统一无损 PNG,重名 _v2.._v99(与引擎/视频版共用)
         C.imwrite_unicode(dst, cv2.cvtColor(wm, cv2.COLOR_RGB2BGR))
         a1, _, _ = C.decode_batch_stats(wam, [wm], 1, msg_np, report_ms=False)
         rng = np.random.default_rng(11)

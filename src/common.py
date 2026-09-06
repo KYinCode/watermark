@@ -284,6 +284,155 @@ def read_frames_iter_auto(path):
     return read_frames_iter(path, w, h)
 
 
+PART_PREFIX = ".part-"
+
+
+def out_name(stem: str, ext: str) -> Path:
+    """<源名>_已加水印<ext>,重名自动 _v2.._v99(引擎/CLI/图片共用)"""
+    cand = OUTPUT / f"{stem}_已加水印{ext}"
+    k = 2
+    while cand.exists():
+        cand = OUTPUT / f"{stem}_已加水印_v{k}{ext}"
+        k += 1
+        if k > 99:
+            raise RuntimeError("成品重名过多,请清理 output\\")
+    return cand
+
+
+def load_payload(text: str, scaling_w: float):
+    """版权文本 -> (wam, msg1, expect_bits, expect_id):引擎/CLI 共用的加载入口(规则不可变)"""
+    import torch
+    expect_id = derive_id(text)
+    expect_bits = text_to_bits(text)
+    wam = load_wam(scaling_w=scaling_w)
+    msg1 = torch.from_numpy(expect_bits).float().unsqueeze(0).cuda()
+    return wam, msg1, expect_bits, expect_id
+
+
+def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h, fps):
+    """对成品抽 1 帧直解自检(R2.6)"""
+    frames = read_frames(product_path, frame_no, 1, w=w, h=h, fps=fps)
+    if not frames:
+        return dict(hit=False, acc=0.0, note="抽帧失败")
+    accs, _, _ = decode_batch_stats(wam, frames, 1, expect_bits, report_ms=False)
+    return dict(hit=bool(accs[0] == 1.0), acc=round(float(accs[0]), 4))
+
+
+def _read_exact(stream, nbytes):
+    """读满 nbytes;EOF 时返回已有部分(可能不足),完全无数据返回 None"""
+    buf = bytearray()
+    while len(buf) < nbytes:
+        chunk = stream.read(nbytes - len(buf))
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf) if buf else None
+
+
+def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path,
+                comp: float = 0.0, emit=None):
+    """全片嵌入核心(引擎/CLI 唯一实现,以引擎版逻辑为基准):
+    流式 ffmpeg 解码 -> 逐帧 WAM 嵌入(可选色彩回补)-> 编码到 part -> 帧数校验 -> 中段抽帧自检。
+    emit 可选: 回调接收事件 dict(type=start/progress/psnr/selfcheck);None 则静默。
+    返回 dict(frames, psnr{mean,min,p5}, wall_s, w, h, fps, embed_ms)。"""
+    import time
+    import torch
+    emit = emit or (lambda ev: None)
+    fps, w, h, total = probe(src)
+    emit(dict(type="start", kind="video", input=src.name, total=total, w=w, h=h, fps=round(fps, 3)))
+    mean_t = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+    std_t = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+
+    dec = subprocess.Popen(
+        [FF, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(src),
+         "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24",
+         "-vf", "scale=in_color_matrix=bt709", "-"],
+        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    enc = subprocess.Popen(
+        [FF, "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "-",
+         "-i", str(src),
+         "-map", "0:v", "-map", "1:a?",
+         "-vf", "scale=out_color_matrix=bt709,format=yuv420p,"
+                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+         "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+         "-c:a", "copy", str(part)],
+        stdin=subprocess.PIPE)
+
+    B = 8
+    frame_bytes = w * h * 3
+    psnr_samples = []
+    n_done = 0
+    t0 = time.perf_counter()
+    t_embed = 0.0
+    try:
+        while True:
+            raw = _read_exact(dec.stdout, frame_bytes * B)
+            if raw is None:
+                break
+            batch = np.frombuffer(raw, dtype=np.uint8).reshape(-1, h, w, 3)
+            tg = time.perf_counter()
+            if comp:  # 色彩回补:嵌入前红绿各预减 N 级(等效蓝差回补;白底 B=255 顶格不能直接加蓝)。PSNR 对未补偿源
+                f = batch.astype(np.float32)
+                f[:, :, :, 0] = np.clip(f[:, :, :, 0] - comp, 0, 255)
+                f[:, :, :, 1] = np.clip(f[:, :, :, 1] - comp, 0, 255)
+                x = norm_frames(f)
+                base = torch.from_numpy(batch).cuda().permute(0, 3, 1, 2).float() / 255.0
+            else:
+                x = norm_frames(batch)
+                base = x * std_t + mean_t
+            with torch.no_grad():
+                out = wam.embed(x, msg1.repeat(x.shape[0], 1))
+            y8 = (out["imgs_w"] * std_t + mean_t).clamp(0, 1).mul(255).round().byte()
+            yf = y8.float() / 255.0
+            mse = ((yf - base) ** 2).mean(dim=(1, 2, 3))
+            psnr_samples.append((-10 * torch.log10(mse + 1e-12)).cpu().numpy())
+            wm = y8.permute(0, 2, 3, 1).cpu().numpy()
+            t_embed += time.perf_counter() - tg
+            enc.stdin.write(wm.tobytes())
+            n_done += len(batch)
+            emit(dict(type="progress", done=n_done, total=total or n_done))
+            last = len(batch) < B
+            del x, base, out, y8, yf, mse, wm, batch
+            if last:
+                break
+    finally:
+        try:
+            enc.stdin.close()
+        except Exception:
+            pass
+        try:
+            dec.stdout.close()
+        except Exception:
+            pass
+        rc_dec = dec.wait()
+        rc_enc = enc.wait()
+    if rc_enc != 0:
+        raise RuntimeError(f"编码失败 rc={rc_enc} rc_dec={rc_dec}")
+
+    wall = time.perf_counter() - t0
+    psnrs = np.concatenate(psnr_samples)
+    psnr_stat = dict(mean=round(float(psnrs.mean()), 2), min=round(float(psnrs.min()), 2),
+                     p5=round(float(np.percentile(psnrs, 5)), 2))
+    emit(dict(type="psnr", **psnr_stat))
+
+    # 帧数校验
+    pr = subprocess.run(
+        [FFPROBE, "-v", "error", "-count_frames",
+         "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "json",
+         str(part)], capture_output=True, text=True).stdout
+    nb = int(json.loads(pr)["streams"][0]["nb_read_frames"])
+    if nb != n_done:
+        raise RuntimeError(f"帧数校验失败: 成品 {nb} 帧 != 嵌入 {n_done} 帧")
+
+    # 自检: 中段抽 1 帧直解(R2.6)
+    sc = selfcheck_frame(wam, part, expect_bits, n_done // 2, w, h, fps)
+    emit(dict(type="selfcheck", index=0, **sc))
+    return dict(frames=n_done, psnr=psnr_stat, wall_s=round(wall, 1), w=w, h=h, fps=fps,
+                embed_ms=round(1000 * t_embed / max(n_done, 1), 2))
+
+
 _t0 = None
 def time_start():
     import time
