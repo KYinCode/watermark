@@ -1,7 +1,8 @@
 # watermark-v2 项目说明
 
 学习型隐形水印(WAM,Meta ICLR 2025)对视频/图片逐帧打水印,抗录屏、截图裁剪、画面合成、平台转码。
-验收结论见 `docs/验收报告.md`。
+引擎内置色彩回补(抵消水印/编码带来的泛黄泛紫)与完整 bt709 色彩标签;自带本机 WebUI 工作台。
+验收结论见 `docs/验收报告.md`,项目当前状态见 `docs/项目状态_交接.md`。
 
 ## 目录结构
 
@@ -33,7 +34,7 @@ watermark\
 │   ├── static\                前端(无框架 SPA,朱印视觉)
 │   ├── data\                  运行数据(任务历史 jobs.json、日志)
 │   └── 启动WebUI.bat          双击启动
-├── experiments\               选型实验脚本(s1~s9)+ 过程数据(out\),不影响交付
+├── experiments\               选型/专题实验脚本(s1~s9 选型、t2b 10bit、t3 色偏补偿)+ 过程数据(out\),不影响交付
 ├── third_party\watermark-anything\   Meta 官方库 + 模型权重 wam_mit.pth(377MB)
 ├── docs\                      需求书 / 验收报告 / 工具使用说明 / 交接文档
 ├── environment.yml            conda 环境清单
@@ -51,6 +52,8 @@ pip install fastapi "uvicorn[standard]" python-multipart   # WebUI 依赖
 
 # WebUI 工作台(推荐):双击 webui\启动WebUI.bat,或
 source wm_env.sh && python webui/app.py     # -> http://127.0.0.1:8765
+#   打水印参数:画质 CRF(默认 14)/ 嵌入强度 scaling_w(隐形 1.5 · 标准 2.0 · 鲁棒 3.0)
+#             / 色彩回补(默认开,随强度自动配量;治白底泛黄、黑边泛黄泛紫)
 
 # 提取水印(取证,命令行与 WebUI 共用同一份码本)
 python tools/extract_wm.py video "output/DeepSeek+DSH_已加水印_v2.mp4" --t 100
@@ -59,7 +62,7 @@ python tools/extract_wm.py image "某张截图.png"
 # 重新打水印(把原始视频/图片直接丢进 data\ 根目录)
 source wm_env.sh && python src/run_all.py            # 全流程
 python src/run_all.py --skip-embed                   # 只重跑验收
-python src/embed_video.py --crf 14                   # 只嵌视频(data\ 下有多个视频时加 --input 指定)
+python src/embed_video.py --crf 14 --scaling-w 2.0    # 只嵌视频;--comp 0.5 手动定回补量,--comp 0 关闭,省略=随强度自动
 python src/embed_images.py                           # 只嵌图片
 ```
 
@@ -77,4 +80,10 @@ python src/embed_images.py                           # 只嵌图片
 - 模型:WAM `wam_mit.pth`(MIT),逐帧嵌 32-bit ID `96e6955d` = 版权文本 SHA-256 前 4 字节;
   提取命中码本即输出完整版权文本(见 codebook.json)。
 - 提取工具内置两步式策略链:全帧 → 镜像 → 亮度/色相反补偿网格 → 定位框裁剪 → 3×3 多窗 → 角度搜索。
+- **色彩回补**(2026-09-06):水印残差会让白底泛黄、深蓝泛紫(白区蓝差实测约 -0.9 级/255,黑边更重)。
+  嵌入前对画面红绿各预减 c 级抵消,c = 0.4 + 0.2×(scaling_w−1.5)(WebUI 默认开,随强度自动配量;
+  图片走无损 PNG 链路基本不偏色,不补偿)。小样实测:白区色差回到 ±0.3 内、黑边泛黄减半、
+  PSNR 代价 ≤0.1dB、直解与 crf23 重编码鲁棒性 100%。数据见 `experiments/t3_compensate.py`。
+- 成品统一写入 bt709 三色彩标签(色彩空间/传递/原色);rawvideo 无标签输入时须在滤镜链加
+  `setparams` 才能写全(引擎已内置)。
 - 已知边界:组合搬运一条龙在 UI 录屏类内容上未达(详见 docs/验收报告.md 第 5 节)。
