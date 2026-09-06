@@ -16,151 +16,24 @@ stdout 按行输出 JSON 事件(后端逐行解析):
   {"type":"error","message":..}
 失败/取消不产生半成品: 成品先写 output/.part-*,成功后原子改名(R2.8/R2.9)。
 成品命名 <源名>_已加水印.mp4/.png,重名自动加 _v2/_v3… 尾缀;meta JSON 同名 _meta。
+视频嵌入核心(流式管道/色彩回补/帧数校验/自检)统一在 common.embed_video,本脚本只做协议与落盘编排。
 """
 import argparse
-import hashlib
 import json
-import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
-import numpy as np
 import torch
 
 PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ / "src"))
 import common as C
 
-PART_PREFIX = ".part-"
-
 
 def emit(obj: dict):
     print(json.dumps(obj, ensure_ascii=False), flush=True)
-
-
-def out_name(stem: str, ext: str) -> Path:
-    """<源名>_已加水印<ext>,重名自动 _v2.._v99"""
-    cand = C.OUTPUT / f"{stem}_已加水印{ext}"
-    k = 2
-    while cand.exists():
-        cand = C.OUTPUT / f"{stem}_已加水印_v{k}{ext}"
-        k += 1
-        if k > 99:
-            raise RuntimeError("成品重名过多,请清理 output\\")
-    return cand
-
-
-def read_exact(stream, nbytes):
-    buf = bytearray()
-    while len(buf) < nbytes:
-        chunk = stream.read(nbytes - len(buf))
-        if not chunk:
-            break
-        buf.extend(chunk)
-    return bytes(buf) if buf else None
-
-
-def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h, fps):
-    """对成品抽 1 帧直解自检(R2.6)"""
-    frames = C.read_frames(product_path, frame_no, 1, w=w, h=h, fps=fps)
-    if not frames:
-        return dict(hit=False, acc=0.0, note="抽帧失败")
-    accs, _, _ = C.decode_batch_stats(wam, frames, 1, expect_bits, report_ms=False)
-    return dict(hit=bool(accs[0] == 1.0), acc=round(float(accs[0]), 4))
-
-
-def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path, comp: float = 0.0):
-    fps, w, h, total = C.probe(src)
-    emit(dict(type="start", kind="video", input=src.name, total=total, w=w, h=h, fps=round(fps, 3)))
-    mean_t = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
-    std_t = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
-
-    dec = subprocess.Popen(
-        [C.FF, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(src),
-         "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24",
-         "-vf", "scale=in_color_matrix=bt709", "-"],
-        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
-    enc = subprocess.Popen(
-        [C.FF, "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "-",
-         "-i", str(src),
-         "-map", "0:v", "-map", "1:a?",
-         "-vf", "scale=out_color_matrix=bt709,format=yuv420p,"
-                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
-         "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-         "-c:a", "copy", str(part)],
-        stdin=subprocess.PIPE)
-
-    B = 8
-    frame_bytes = w * h * 3
-    psnr_samples = []
-    n_done = 0
-    t0 = time.perf_counter()
-    try:
-        while True:
-            raw = read_exact(dec.stdout, frame_bytes * B)
-            if raw is None:
-                break
-            batch = np.frombuffer(raw, dtype=np.uint8).reshape(-1, h, w, 3)
-            if comp:  # 色彩回补:嵌入前红绿各预减 N 级(等效蓝差回补;白底 B=255 顶格不能直接加蓝)。PSNR 对未补偿源
-                f = batch.astype(np.float32)
-                f[:, :, :, 0] = np.clip(f[:, :, :, 0] - comp, 0, 255)
-                f[:, :, :, 1] = np.clip(f[:, :, :, 1] - comp, 0, 255)
-                x = C.norm_frames(f)
-                base = torch.from_numpy(batch).cuda().permute(0, 3, 1, 2).float() / 255.0
-            else:
-                x = C.norm_frames(batch)
-                base = x * std_t + mean_t
-            with torch.no_grad():
-                out = wam.embed(x, msg1.repeat(x.shape[0], 1))
-            y8 = (out["imgs_w"] * std_t + mean_t).clamp(0, 1).mul(255).round().byte()
-            yf = y8.float() / 255.0
-            mse = ((yf - base) ** 2).mean(dim=(1, 2, 3))
-            psnr_samples.append((-10 * torch.log10(mse + 1e-12)).cpu().numpy())
-            wm = y8.permute(0, 2, 3, 1).cpu().numpy()
-            enc.stdin.write(wm.tobytes())
-            n_done += len(batch)
-            emit(dict(type="progress", done=n_done, total=total or n_done))
-            last = len(batch) < B
-            del x, base, out, y8, yf, mse, wm, batch
-            if last:
-                break
-    finally:
-        try:
-            enc.stdin.close()
-        except Exception:
-            pass
-        try:
-            dec.stdout.close()
-        except Exception:
-            pass
-        rc_dec = dec.wait()
-        rc_enc = enc.wait()
-    if rc_enc != 0:
-        raise RuntimeError(f"编码失败 rc={rc_enc} rc_dec={rc_dec}")
-
-    wall = time.perf_counter() - t0
-    psnrs = np.concatenate(psnr_samples)
-    psnr_stat = dict(mean=round(float(psnrs.mean()), 2), min=round(float(psnrs.min()), 2),
-                     p5=round(float(np.percentile(psnrs, 5)), 2))
-    emit(dict(type="psnr", **psnr_stat))
-
-    # 帧数校验
-    pr = subprocess.run(
-        [C.FFPROBE, "-v", "error", "-count_frames",
-         "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "json",
-         str(part)], capture_output=True, text=True).stdout
-    nb = int(json.loads(pr)["streams"][0]["nb_read_frames"])
-    if nb != n_done:
-        raise RuntimeError(f"帧数校验失败: 成品 {nb} 帧 != 嵌入 {n_done} 帧")
-
-    # 自检: 中段抽 1 帧直解(R2.6)
-    sc = selfcheck_frame(wam, part, expect_bits, n_done // 2, w, h, fps)
-    emit(dict(type="selfcheck", index=0, **sc))
-    return dict(frames=n_done, psnr=psnr_stat, wall_s=round(wall, 1), w=w, h=h, fps=fps)
 
 
 def embed_one_image(wam, msg1, expect_bits, img_path: Path, part: Path):
@@ -191,8 +64,6 @@ def main():
                     help="视频色彩回补:嵌入前红绿各预减 N 级,抵消泛黄/泛紫;"
                          "<0=按强度自动配量(1.5→0.4,2.0→0.5,强度每+0.5约+0.1),0=关闭;图片路径恒不补偿")
     args = ap.parse_args()
-    expect_id = C.derive_id(args.text)
-    expect_bits = C.text_to_bits(args.text)
     C.OUTPUT.mkdir(exist_ok=True)
     if args.input:
         comp = round(args.comp if args.comp >= 0
@@ -202,18 +73,17 @@ def main():
 
     part = None
     try:
-        wam = C.load_wam(scaling_w=args.scaling_w)
-        msg1 = torch.from_numpy(expect_bits).float().unsqueeze(0).cuda()
+        wam, msg1, expect_bits, expect_id = C.load_payload(args.text, args.scaling_w)
         id_hex = f"{expect_id:08x}"
 
         if args.input:
             src = Path(args.input)
             if not src.exists():
                 raise FileNotFoundError(f"源文件不存在: {src}")
-            final = out_name(src.stem, ".mp4")
-            part = C.OUTPUT / f"{PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
+            final = C.out_name(src.stem, ".mp4")
+            part = C.OUTPUT / f"{C.PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
             emit(dict(type="part", path=str(part), final=str(final)))
-            info = embed_video(wam, msg1, expect_bits, src, args.crf, part, comp)
+            info = C.embed_video(wam, msg1, expect_bits, src, args.crf, part, comp, emit=emit)
             part.replace(final)
             meta = dict(source=str(src), out=str(final), work=args.work_name, text=args.text,
                         id_hex=id_hex, scaling_w=args.scaling_w, crf=args.crf, comp=comp,
@@ -233,8 +103,8 @@ def main():
                       ("…" if len(imgs) > 3 else ""), total=len(imgs)))
             items = []
             for i, p in enumerate(imgs):
-                final = out_name(p.stem, ".png")
-                part = C.OUTPUT / f"{PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
+                final = C.out_name(p.stem, ".png")
+                part = C.OUTPUT / f"{C.PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
                 info = embed_one_image(wam, msg1, expect_bits, p, part)
                 part.replace(final)
                 meta_path = final.with_name(final.stem + "_meta.json")

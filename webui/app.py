@@ -128,7 +128,7 @@ class JobStore:
                 j["status"] = "interrupted"
                 j["error"] = j.get("error") or "后端重启,任务中断"
                 changed = True
-        for part in C.OUTPUT.glob(".part-*"):
+        for part in C.OUTPUT.glob(f"{C.PART_PREFIX}*"):
             try:
                 part.unlink()
                 changed = True
@@ -1030,7 +1030,7 @@ def api_job_export(job_id: str):
 def api_products():
     items = []
     for f in C.OUTPUT.iterdir():
-        if f.name.startswith(".part-") or f.suffix.lower() not in (".mp4", ".png"):
+        if f.name.startswith(C.PART_PREFIX) or f.suffix.lower() not in (".mp4", ".png"):
             continue
         if "_已加水印" not in f.name:
             continue
