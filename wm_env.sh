@@ -4,11 +4,15 @@
 _PROJ_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJ="$_PROJ_DIR"
 
-# 代理:本机 7897 端口活着才启用(换机没有代理时自动跳过,不影响 git/pip)
-if timeout 1 bash -c "</dev/tcp/127.0.0.1/7897" 2>/dev/null; then
-  export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
-  export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
-  export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1
+# 代理:尊重已设好的代理 > WM_PROXY 环境变量 > 探测本机 7897;都没有就走直连
+if [ -z "$HTTP_PROXY" ] && [ -z "$http_proxy" ]; then
+  _px="${WM_PROXY:-http://127.0.0.1:7897}"
+  _port="$(echo "$_px" | grep -oE '[0-9]+$')"
+  if timeout 1 bash -c "</dev/tcp/127.0.0.1/$_port" 2>/dev/null; then
+    export HTTP_PROXY="$_px" HTTPS_PROXY="$_px" http_proxy="$_px" https_proxy="$_px"
+    export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1
+  fi
+  unset _px _port
 fi
 
 # ffmpeg/ffprobe:项目 bin\ 优先,回退常见安装位置(与 src/common.py 解析链同序)
