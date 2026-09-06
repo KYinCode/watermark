@@ -150,7 +150,7 @@ def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path, comp: f
 
     # 帧数校验
     pr = subprocess.run(
-        [C.FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-count_frames",
+        [C.FFPROBE, "-v", "error", "-count_frames",
          "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "json",
          str(part)], capture_output=True, text=True).stdout
     nb = int(json.loads(pr)["streams"][0]["nb_read_frames"])

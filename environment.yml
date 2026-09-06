@@ -31,3 +31,7 @@ dependencies:
       - typing-extensions==4.16.0
       - MarkupSafe==3.0.3
       - mpmath==1.3.0
+      # WebUI 后端:
+      - fastapi
+      - uvicorn
+      - python-multipart
