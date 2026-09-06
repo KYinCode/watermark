@@ -78,7 +78,7 @@ def under_proj(p: Path) -> bool:
 
 def ffprobe_full(path: Path) -> dict:
     """视频/图片规格探测,失败给出可读错误(R2.8)"""
-    ffprobe = C.FF.replace("ffmpeg.exe", "ffprobe.exe")
+    ffprobe = C.FFPROBE
     r = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries",
          "stream=codec_type,codec_name,avg_frame_rate,width,height,nb_frames",
@@ -1058,5 +1058,9 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 if __name__ == "__main__":
     import uvicorn
+    import shutil as _sh
+    if not Path(C.FF).exists() and not _sh.which(C.FF):
+        print("[警告] 未找到 ffmpeg:打水印/预览会失败。运行 webui\\安装环境.bat 自动下载到项目 bin\\,"
+              "或在 webui\\local_config.bat 里 set \"WM_FFMPEG=你的ffmpeg目录\"", flush=True)
     print(f"wm2 水印工作台 -> http://127.0.0.1:{PORT}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

@@ -127,7 +127,7 @@ def main():
 
     # 校验
     probe = subprocess.run(
-        [C.FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-count_frames",
+        [C.FFPROBE, "-v", "error", "-count_frames",
          "-select_streams", "v:0",
          "-show_entries", "stream=nb_read_frames,width,height,avg_frame_rate,codec_name",
          "-show_entries", "format=duration,size", "-of", "json", str(out_path)],

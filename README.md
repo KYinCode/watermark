@@ -23,8 +23,9 @@ watermark\
 │   ├── make_report.py         从 verification JSON 生成验收报告
 │   ├── run_all.py             一键全流程
 │   └── s2_attacks.py          攻击原语库
-├── tools\                     【取证提取】
+├── tools\                     【取证提取 + 环境工具】
 │   ├── extract_wm.py          水印提取工具(单帧/视频时间点,多 ID 查表)
+│   ├── env_check.py           环境体检/修复一体脚本(搬家、换机用;唯一逻辑脚本)
 │   └── codebook.json          码本 v2:works[] 多作品(ID↔版权文本;兼容旧单作品格式)
 ├── webui\                     【WebUI 工作台】(本机自用,http://127.0.0.1:8765)
 │   ├── app.py                 FastAPI 后端(GPU 串行队列/任务持久化/码本管理)
@@ -33,7 +34,12 @@ watermark\
 │   ├── store.py               码本存储(tools/codebook.json v2,旧格式自动迁移)
 │   ├── static\                前端(无框架 SPA,朱印视觉)
 │   ├── data\                  运行数据(任务历史 jobs.json、日志)
-│   └── 启动WebUI.bat          双击启动
+│   ├── local_config.bat       (可选)手工指定的本机路径覆盖
+│   ├── 启动WebUI.bat          双击启动(--check 传环境体检)
+│   └── 安装环境.bat           新电脑一键装环境(全部下载进项目目录)
+├── bin\                       (按需生成)ffmpeg/ffprobe 自动下载落位处
+├── runtime\                   (按需生成)Python 内嵌版 + 依赖(新电脑免 conda)
+├── hf_home\                   (按需生成)HuggingFace 缓存,留在项目内
 ├── experiments\               选型/专题实验脚本(s1~s9 选型、t2b 10bit、t3 色偏补偿)+ 过程数据(out\),不影响交付
 ├── third_party\watermark-anything\   Meta 官方库 + 模型权重 wam_mit.pth(377MB)
 ├── docs\                      需求书 / 验收报告 / 工具使用说明 / 交接文档
@@ -44,7 +50,9 @@ watermark\
 ## 常用操作
 
 ```bash
-# 环境准备(一次性,见 environment.yml)
+# 环境准备(二选一)
+#   新电脑推荐:双击 webui\安装环境.bat —— 全自动,全部装进项目目录,不需要 conda
+#   或者手动 conda:
 conda create -n wm2 python=3.10 -y && conda activate wm2
 pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 pip install -r third_party/watermark-anything/requirements.txt
@@ -52,6 +60,7 @@ pip install fastapi "uvicorn[standard]" python-multipart   # WebUI 依赖
 
 # WebUI 工作台(推荐):双击 webui\启动WebUI.bat,或
 source wm_env.sh && python webui/app.py     # -> http://127.0.0.1:8765
+#   环境体检:双击 webui\启动WebUI.bat --check,或 python tools/env_check.py(修复加 --fix)
 #   打水印参数:画质 CRF(默认 14)/ 嵌入强度 scaling_w(隐形 1.5 · 标准 2.0 · 鲁棒 3.0)
 #             / 色彩回补(默认开,随强度自动配量;治白底泛黄、黑边泛黄泛紫)
 
@@ -87,3 +96,20 @@ python src/embed_images.py                           # 只嵌图片
 - 成品统一写入 bt709 三色彩标签(色彩空间/传递/原色);rawvideo 无标签输入时须在滤镜链加
   `setparams` 才能写全(引擎已内置)。
 - 已知边界:组合搬运一条龙在 UI 录屏类内容上未达(详见 docs/验收报告.md 第 5 节)。
+
+## 搬家 / 换电脑
+
+项目按"自包含"设计:可下载的依赖一律装在项目目录内,代码里不写死任何盘符。
+
+- **同一台电脑挪位置**:直接剪切整个文件夹到新位置,双击 `webui\启动WebUI.bat` 即可
+  (所有路径运行时自适应;ffmpeg 按 `WM_FFMPEG` 环境变量 → 项目 `bin\` → PATH → 常见安装位置 的顺序解析)。
+- **换新电脑**:
+  1. 整个文件夹拷过去(`git clone` 也行,但模型权重 `third_party\watermark-anything\checkpoints\`
+     约 360MB 不在 git 里,需从旧机器单独拷贝);
+  2. 双击 `webui\安装环境.bat`:自动下载 Python 3.10 内嵌版(约 11MB)进 `runtime\`、
+     装 torch CUDA 等依赖(约 2.5GB)、缺 ffmpeg 时自动下载静态版进 `bin\`
+     (也可以在 `webui\local_config.bat` 写 `set "WM_FFMPEG=你的ffmpeg目录"` 用本机已装的)。
+     全程不需要 conda、不需要管理员、不改系统设置;
+  3. 随时体检:`webui\启动WebUI.bat --check` 或 `python tools/env_check.py`(修复加 `--fix`)。
+- 诊断入口只有 `tools/env_check.py` 一个逻辑脚本;两个 .bat 只是双击壳
+  (新机器没有任何 Python 时,由 bat 用 PowerShell 先引导内嵌版 Python,其余全在 py 里)。

@@ -17,3 +17,9 @@ __pycache__/
 *.pyc
 webui/data/
 .vscode/
+
+# ===== 按需下载到项目内的环境(安装环境.bat/env_check.py 生成,不入库) =====
+bin/
+runtime/
+webui/local_config.bat
+hf_home/

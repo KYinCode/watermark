@@ -199,7 +199,7 @@ class Worker:
     def _duration(path) -> float:
         import subprocess
         out = subprocess.run(
-            [C.FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-show_entries",
+            [C.FFPROBE, "-v", "error", "-show_entries",
              "format=duration", "-of", "json", str(path)],
             capture_output=True, text=True).stdout
         return float(json.loads(out)["format"]["duration"])

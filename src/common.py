@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
-"""wm2 公共库:WAM 模型加载、ffmpeg 流水线 IO、消息码本、解码统计。"""
+"""wm2 公共库:WAM 模型加载、ffmpeg 流水线 IO、消息码本、解码统计。
+
+可移植性约定(2026-09-06):所有外部工具路径都不写死——
+ffmpeg/ffprobe 解析顺序:环境变量 WM_FFMPEG → 项目 bin\ → PATH → 常见安装位置;
+pip/HF 等可下载资源一律装/缓存在项目目录内(runtime\、hf_home\)。
+"""
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +16,34 @@ import numpy as np
 
 PROJ = Path(__file__).resolve().parent.parent
 REPO = PROJ / "third_party" / "watermark-anything"
-FF = r"C:\Environment\FFmpeg\FFmpeg_Builds\bin\ffmpeg.exe"
+os.environ.setdefault("HF_HOME", str(PROJ / "hf_home"))  # HF 缓存留在项目内,搬家不丢
+
+
+def _resolve_tool(name: str) -> str:
+    env = os.environ.get("WM_FFMPEG")
+    if env:
+        p = Path(env)
+        cand = p / name if p.is_dir() else p
+        if cand.exists():
+            return str(cand)
+    cand = PROJ / "bin" / name
+    if cand.exists():
+        return str(cand)
+    import shutil
+    which = shutil.which(name)
+    if which:
+        return which
+    for base in (r"C:\Environment\FFmpeg\FFmpeg_Builds\bin",  # 本机既有安装
+                 r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin"):
+        cand = Path(base) / name
+        if cand.exists():
+            return str(cand)
+    return name  # 兜底:交给报错;入口(启动WebUI --check / 安装环境.bat)有体检与引导
+
+
+FF = _resolve_tool("ffmpeg.exe")
+FFPROBE = _resolve_tool("ffprobe.exe")
+
 DATA = PROJ / "data"                              # 输入投放区(扁平,文件直接放这里)
 OUT = PROJ / "experiments" / "out"                # 实验中间产物
 OUTPUT = PROJ / "output"                          # 成品输出目录
@@ -41,7 +74,7 @@ def probe(path):
     """ffprobe -> (fps, w, h, 总帧数或 None)"""
     import json as _json
     out = subprocess.run(
-        [FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-select_streams", "v:0",
+        [FFPROBE, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=avg_frame_rate,width,height,nb_frames",
          "-of", "json", str(path)],
         capture_output=True, text=True).stdout
@@ -237,7 +270,7 @@ def read_frames_iter(path, w, h):
 def probe_video_size(path):
     import json as _json
     out = subprocess.run(
-        [FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-select_streams", "v:0",
+        [FFPROBE, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "json", str(path)],
         capture_output=True, text=True).stdout
     st = _json.loads(out)["streams"][0]
