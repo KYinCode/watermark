@@ -110,22 +110,30 @@ def detect_proxy():
 
 def fetch_ffmpeg():
     """下载 ffmpeg 静态版到项目 bin\\。
-    线路顺序:代理活着优先走代理(通常最快) -> 死了走国内镜像轮试 -> 镜像全挂现场问端口(绝不记住)。"""
+    线路顺序:直连(覆盖 TUN 模式/海外/系统代理,快) -> 本机代理探测 -> 国内镜像轮试
+    -> 问端口(最多 3 次,绝不记住) -> 手动方案。"""
     BIN.mkdir(exist_ok=True)
     data, via = None, ""
-    proxy = detect_proxy()
-    if proxy:
-        print(f"      检测到本机代理 {proxy},优先走代理(通常比镜像快)...")
-        try:
-            data = dl(FFMPEG_URL, proxy=proxy, timeout=120)
-            via = f"代理 {proxy}"
-        except Exception as e:
-            print(f"      代理线路失败: {e},改走国内镜像...")
-    else:
-        print("      未检测到本机代理,走国内镜像...")
+    print("      尝试直连...")
+    try:
+        data = dl(FFMPEG_URL, timeout=20)
+        via = "直连"
+    except Exception as e:
+        print(f"      直连失败: {e}")
+    if data is None:
+        proxy = detect_proxy()
+        if proxy:
+            print(f"      检测到本机代理 {proxy},走代理...")
+            try:
+                data = dl(FFMPEG_URL, proxy=proxy, timeout=120)
+                via = f"代理 {proxy}"
+            except Exception as e:
+                print(f"      代理线路失败: {e},改走国内镜像...")
+        else:
+            print("      未检测到本机代理,走国内镜像...")
     if data is None:
         for label, url in [("国内镜像1", FFMPEG_MIRRORS[0]), ("国内镜像2", FFMPEG_MIRRORS[1]),
-                           ("国内镜像3", FFMPEG_MIRRORS[2]), ("直连", FFMPEG_URL)]:
+                           ("国内镜像3", FFMPEG_MIRRORS[2])]:
             print(f"      尝试{label}...")
             try:
                 data = dl(url)
