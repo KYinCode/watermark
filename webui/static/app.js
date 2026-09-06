@@ -1044,7 +1044,7 @@ function compareDrawer(f) {
     <div class="warn-box hidden" id="cmp-afall" style="margin-top:10px">原片格式浏览器无法直接播放(常见于 HEVC 未装系统解码扩展)。
       <button class="btn sm" id="cmp-tc">生成浏览器预览版</button> <span class="small" id="cmp-tcst"></span>
       <div class="small muted">纯 CPU 转码一次并缓存(不占用 GPU 队列),完成后自动替换左屏。</div></div>
-    <div class="small muted" style="margin-top:8px">进度条只负责取时间:拖动/点击后两路视频同时暂停、并行解码到目标帧,两路都解完才继续播放(解码期间播放键禁用);播放中漂移用变速平滑追(0.8×~1.2×),偏差过大才重新跳转。「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
+    <div class="small muted" style="margin-top:8px">进度条只负责取时间:拖动/点击后两路视频同时暂停、并行解码到目标帧,两路都解完才解除播放禁用,是否播放由你手动决定(解码期间播放键禁用);播放中漂移用变速平滑追(0.8×~1.2×),偏差过大才重新跳转。「±1帧」逐帧对齐检查;差异图全黑 = 两帧一致。</div>`;
   drawer(`对比 · ${f.name}`, body, { mode: "sheet", wide: true, width: "calc(100vw - 24px)" });
 
   const $id = s => $(s, body);
@@ -1065,16 +1065,15 @@ function compareDrawer(f) {
   const updDiffSoon = debounce(updDiff, 260);
   const syncNow = () => { if (b.readyState > 0 && !b.seeking && !near(b.currentTime, a.currentTime)) b.currentTime = a.currentTime; };
   b.addEventListener("loadedmetadata", () => syncNow());   // 右屏装载完成后再对齐一次(覆盖装载期赋值失效)
-  // —— 解码闸门:跳转时两路强制暂停、并行直跳;两路都解出目标帧(seeked + readyState≥2)才放行 ——
-  // 等待期间播放键禁用(点击无效);放行时若跳转前在播则自动续播。
-  let gate = 0, gateWasPlaying = false, gateGuard = 0;
+  // —— 解码闸门:跳转时两路强制暂停、并行直跳;两路都解出目标帧(seeked + readyState≥2)才解除禁用 ——
+  // 极端模式:放行后一律保持暂停,是否播放完全由用户手动决定(等待期间播放键禁用,点击无效)。
+  let gate = 0, gateGuard = 0;
   const gateOpen = () => {
     if (gate > 0 || a.seeking || b.seeking || a.readyState < 2 || b.readyState < 2) return;   // 任一路没解完就继续等
     clearTimeout(gateGuard);
     playBtn.disabled = false;
-    playBtn.textContent = a.paused ? "▶ 播放" : "⏸ 暂停";
+    playBtn.textContent = "▶ 播放";                             // 放行后保持暂停,等用户手动播放
     updDiffSoon();                                              // 放行时差异图对准的就是屏幕画面
-    if (gateWasPlaying && a.paused && !sliderDrag) { gateWasPlaying = false; a.play(); b.play(); }
   };
   const seekGate = () => { if (gate > 0) gate--; gateOpen(); };
   a.addEventListener("seeked", seekGate);
@@ -1087,7 +1086,6 @@ function compareDrawer(f) {
     const needA = a.readyState > 0 && (a.seeking || !near(a.currentTime, t));
     const needB = b.readyState > 0 && (b.seeking || !near(b.currentTime, t));
     if (!needA && !needB) return;
-    if (gate === 0 && !sliderDrag && !gateWasPlaying) gateWasPlaying = !a.paused && !b.paused;   // 新一轮跳转:记录播放意图
     a.pause(); b.pause();                          // 闸门:跳转期间禁止播放
     playBtn.disabled = true; playBtn.textContent = "⏳ 解码中…";
     clearTimeout(gateGuard);
@@ -1159,7 +1157,7 @@ function compareDrawer(f) {
     } else { a.pause(); }   // a 的 pause 事件会同步暂停右屏
   };
   slider.addEventListener("input", () => {
-    if (!sliderDrag) { sliderDrag = true; gateWasPlaying = !a.paused && !b.paused; a.pause(); }   // 拖动开始:记录播放意图并暂停
+    if (!sliderDrag) { sliderDrag = true; a.pause(); }   // 拖动开始:两路暂停
     b.pause();
     timeEl.textContent = `${fmtT(+slider.value)} / ${fmtT(a.duration || f.duration || 0)}`;
     clearTimeout(scrubTimer);
@@ -1168,8 +1166,7 @@ function compareDrawer(f) {
   slider.addEventListener("change", () => {
     sliderDrag = false;
     clearTimeout(scrubTimer);
-    seekBoth(+slider.value);
-    if (gate === 0 && gateWasPlaying && a.paused) { gateWasPlaying = false; a.play(); b.play(); }   // 位置没动没触发闸门时也要续播
+    seekBoth(+slider.value);   // 跳转后保持暂停,播放由用户手动触发
   });
   const fps = f.fps || 30;
   const step = dir => {
