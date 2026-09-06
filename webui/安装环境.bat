@@ -27,7 +27,11 @@ if /i "%GO%"=="N" exit /b 1
 echo [引导] 下载 Python 内嵌版...
 mkdir "%ROOT%\runtime" 2>nul
 powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip' -OutFile '%ROOT%\runtime\py310.zip'"
-if not exist "%ROOT%\runtime\py310.zip" (echo 下载失败,请检查网络后重试 & pause & exit /b 1)
+if not exist "%ROOT%\runtime\py310.zip" (
+  echo [引导] 官方源不通,换华为云镜像...
+  powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.huaweicloud.com/python/3.10.11/python-3.10.11-embed-amd64.zip' -OutFile '%ROOT%\runtime\py310.zip'"
+)
+if not exist "%ROOT%\runtime\py310.zip" (echo 两条源都下载失败,请检查网络后重试 & pause & exit /b 1)
 powershell -NoProfile -Command "Expand-Archive -Force '%ROOT%\runtime\py310.zip' '%ROOT%\runtime\python'"
 del "%ROOT%\runtime\py310.zip"
 powershell -NoProfile -Command "(Get-Content '%ROOT%\runtime\python\python310._pth') -replace '#import site','import site' | Set-Content '%ROOT%\runtime\python\python310._pth'"
