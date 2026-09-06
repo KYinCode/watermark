@@ -124,8 +124,9 @@ def run_segment(product, args_start, msg_np, wam=None):
         best = angle_best(wam, t, rot_ranges[ang], msg_np)
         accs, _, _ = C.decode_batch_stats(wam, (inv_rot_crop(f, best) for f in C.read_frames_iter_auto(t)),
                                           1, msg_np, report_ms=False)
-        results.append(dict(name=f"09_rot{ang}_两步式(inv={best})", n=N, exact=float((accs == 1).mean()),
-                            ge31=float((accs >= 31 / 32).mean()), acc=float(accs.mean()), cov=-1))
+        results.append(dict(name=f"09_rot{ang}_两步式", inv=int(best), n=N,
+                            exact=float((accs == 1).mean()), ge31=float((accs >= 31 / 32).mean()),
+                            acc=float(accs.mean()), cov=-1))
         print(f"  09_rot{ang}_两步式(inv={best})  exact={results[-1]['exact']:6.1%}", flush=True)
     # 10) 裁剪 25/36/50%
     rng = np.random.default_rng(42)
@@ -168,6 +169,23 @@ def run_segment(product, args_start, msg_np, wam=None):
            ("高斯模糊", lambda f: S.blur(f)), ("椒盐5%", lambda f: S.saltpepper(f))]
     for name, fn in ops:
         report(wam, f"13_{name}", (fn(f) for f in C.read_frames_iter(prod_seg, C.W, C.H)), N, msg_np, results)
+    # 13b) 工具链(逆补偿网格): 攻击后逐档逆补偿,每帧取网格最优;对应 extract_wm 策略链的补偿段
+    def toolchain(name, attack, comps):
+        accs_all = []
+        for comp in comps:
+            accs, _, _ = C.decode_batch_stats(
+                wam, (comp(attack(f)) for f in C.read_frames_iter(prod_seg, C.W, C.H)),
+                N, msg_np, report_ms=False)
+            accs_all.append(accs)
+        best = np.stack(accs_all).max(axis=0)
+        results.append(dict(name=name, n=N, exact=float((best == 1).mean()),
+                            ge31=float((best >= 31 / 32).mean()), acc=float(best.mean()), cov=-1))
+        print(f"  {name:<30} exact={results[-1]['exact']:6.1%} ge31={results[-1]['ge31']:6.1%}", flush=True)
+
+    toolchain("13_亮-20%_工具链", lambda f: S.brightness(f, -51),
+              [lambda f, d=d: S.brightness(f, d) for d in (13, 26, 39, 51)])
+    toolchain("13_色相-20%_工具链", lambda f: S.hue_shift(f, -36),
+              [lambda f, s=s: S.hue_shift(f, s) for s in (12, 24, 36, 48, 60, 72)])
     # 14) 遮挡 10%
     accs_all = []
     for inst in range(3):

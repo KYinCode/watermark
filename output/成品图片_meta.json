@@ -1,0 +1,18 @@
+[
+  {
+    "img": "ChatGPT Image 2026年8月30日 20_21_30.png",
+    "out": "ChatGPT Image 2026年8月30日 20_21_30_已加水印.png",
+    "scaling_w": 2.5,
+    "psnr": 36.8,
+    "exact_1to1": true,
+    "crop25_exact": 0.85
+  },
+  {
+    "img": "ChatGPT Image 2026年8月30日 20_23_44.png",
+    "out": "ChatGPT Image 2026年8月30日 20_23_44_已加水印.png",
+    "scaling_w": 2.5,
+    "psnr": 36.51,
+    "exact_1to1": true,
+    "crop25_exact": 0.9
+  }
+]
