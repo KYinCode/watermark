@@ -32,8 +32,12 @@ def main():
         return f"| {name} | **{fmt(exact)}** | {ge31_s} | {note} |"
 
     def find(results, key):
+        # 精确优先;兼容带动态后缀的历史键(如 09_rot5_两步式(inv=-7))
         for r in results or []:
             if r["name"] == key:
+                return r
+        for r in results or []:
+            if r["name"].startswith(key):
                 return r
         return None
 
@@ -102,7 +106,7 @@ def main():
             ("色相 -20% 单步(#8)", "13_色相-20%", "—"),
             ("色相 -20% 工具链(#8)", "13_色相-20%_工具链", "≥80%"),
             ("高斯模糊(#8)", "13_高斯模糊", "≥80%"),
-            ("椒盐噪声 5%(#8)", "13_椒盐", "≥80%"),
+            ("椒盐噪声 5%(#8)", "13_椒盐5%", "≥80%"),
             ("随机遮挡 10%(#8)", "14_随机遮挡10%", "≥80%"),
             ("组合搬运单步(#9)", "15a_组合搬运_单步", "—"),
             ("组合搬运镜像重试(#9)", "15b_组合搬运_镜像重试", "≥60%"),
@@ -117,10 +121,10 @@ def main():
         A("| 图片 | PSNR | 1:1 解码 |")
         A("|---|---|---|")
         for r in img_meta:
-            A(f"| {r['img']} | {r['psnr']} dB | {'✓' if r.get('exact_1to1', r.get('exact_1to1')) else '✗'} |")
+            A(f"| {r['img']} | {r['psnr']} dB | {'✓' if r.get('exact_1to1') else '✗'} |")
         A("")
-        A(f"最终档位:scaling_w=2.5(25% 面积随机裁剪 ×20:图1 {img_meta[0].get('crop25_exact', 0):.0%}、"
-          f"图2 {img_meta[1].get('crop25_exact', 0):.0%},PSNR 见上表)。")
+        crops = "、".join(f"图{i + 1} {r.get('crop25_exact', 0):.0%}" for i, r in enumerate(img_meta))
+        A(f"最终档位:scaling_w=2.5(25% 面积随机裁剪 ×20:{crops},PSNR 见上表)。")
         A("")
     A("## 4. 嵌入耗时(需求 #11)")
     A("")

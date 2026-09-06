@@ -8,6 +8,7 @@ output/*
 !output/verification/
 !output/samples/
 !output/成品_meta.json
+!output/成品图片_meta.json
 
 # 实验过程数据(选型实验的中间产物)
 experiments/out/

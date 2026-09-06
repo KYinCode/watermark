@@ -28,8 +28,7 @@ import numpy as np
 
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ / "src"))
-FF = r"C:\Environment\FFmpeg\FFmpeg_Builds\bin\ffmpeg.exe"
-FFPROBE = r"C:\Environment\FFmpeg\FFmpeg_Builds\bin\ffprobe.exe"
+import common as C  # noqa: E402  (FF/FFPROBE 按 common 的可移植性约定解析:WM_FFMPEG → bin\ → PATH → 常见位置)
 
 
 def load_codebook():
@@ -47,7 +46,6 @@ def load_codebook():
 
 
 def load_wam():
-    import common as C
     return C.load_wam(scaling_w=2.0)
 
 
@@ -72,7 +70,6 @@ class Decoder:
         return bits[:, sel].mean(dim=1).cpu().numpy().astype(np.float32), cov
 
     def _norm(self, batch):
-        import common as C
         return C.norm_frames(batch)
 
     def bbox(self, frame, thresh=0.5, shrink=0.0):
@@ -163,7 +160,7 @@ def bits2id(bits):
 
 def read_raw_window(path, start, end, w, h):
     # -nostdin + stdin=DEVNULL: 常驻服务场景下继承的 stdin 管道会让 ffmpeg 退出阻塞(见 engine_worker)
-    cmd = [FF, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.6f}", "-i", str(path),
+    cmd = [C.FF, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.6f}", "-i", str(path),
            "-t", f"{max(end - start, 1.0 / 60):.6f}", "-vsync", "0",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-vf", "scale=in_color_matrix=bt709", "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
@@ -178,12 +175,13 @@ def read_raw_window(path, start, end, w, h):
 
 
 def probe(path):
-    out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0",
+    out = subprocess.run([C.FFPROBE, "-v", "error", "-select_streams", "v:0",
                           "-show_entries", "stream=avg_frame_rate,width,height",
                           "-of", "json", str(path)], capture_output=True, text=True).stdout
     st = json.loads(out)["streams"][0]
     num, den = st["avg_frame_rate"].split("/")
-    return float(num) / float(den), int(st["width"]), int(st["height"])
+    fps = float(num) / float(den) if float(den) else 30.0
+    return fps, int(st["width"]), int(st["height"])
 
 
 def main():
