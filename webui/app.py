@@ -356,7 +356,8 @@ class QueueWorker(threading.Thread):
         WORKER.kill()
         cmd = [sys.executable, str(WEBUI / "engine_embed.py"),
                "--text", work["text"], "--work-name", work["name"],
-               "--scaling-w", str(p["scaling_w"]), "--crf", str(p["crf"])]
+               "--scaling-w", str(p["scaling_w"]), "--crf", str(p["crf"]),
+               "--comp", str(p.get("comp", 0.0))]
         if p["kind"] == "video":
             cmd += ["--input", p["sources"][0]]
         else:
@@ -823,6 +824,9 @@ async def api_jobs_embed(req: Request):
     crf = int(b.get("crf", 14))
     if not (8 <= crf <= 34):
         raise HTTPException(400, "crf 须在 8~34")
+    comp = float(b.get("comp", 0.0))
+    if not (0 <= comp <= 2):
+        raise HTTPException(400, "色彩回补 comp 须在 0~2")
     sources = [str(Path(s)) for s in b.get("sources", [])]
     if not sources:
         raise HTTPException(400, "未选择素材")
@@ -837,16 +841,16 @@ async def api_jobs_embed(req: Request):
             for s in sources:  # 多视频逐个排队(R2.7)
                 made.append(JOBS.create("embed_video", f"打水印 · {Path(s).name}",
                                         dict(kind="video", sources=[s], work_id=work_id,
-                                             crf=crf, scaling_w=sw)))
+                                             crf=crf, scaling_w=sw, comp=comp)))
         else:
             made.append(JOBS.create("embed_video", f"打水印 · {Path(sources[0]).name}",
                                     dict(kind="video", sources=sources, work_id=work_id,
-                                         crf=crf, scaling_w=sw)))
+                                         crf=crf, scaling_w=sw, comp=comp)))
     else:
         made.append(JOBS.create("embed_images",
                                 f"打水印 · {len(sources)} 张图片",
                                 dict(kind="images", sources=sources, work_id=work_id,
-                                     crf=crf, scaling_w=sw)))
+                                     crf=crf, scaling_w=sw, comp=comp)))
     return [dict(id=j["id"], label=j["label"]) for j in made]
 
 

@@ -2,7 +2,7 @@
 """WebUI 嵌入子进程(R6.1/R6.3):参数化作品文本 -> 派生 ID -> 嵌入。
 
 用法:
-  视频: python webui/engine_embed.py --input <视频> --text "版权文本" --scaling-w 2.0 --crf 14
+  视频: python webui/engine_embed.py --input <视频> --text "版权文本" --scaling-w 2.0 --crf 14 [--comp 0.4]
   图片: python webui/engine_embed.py --images a.png b.png --text "版权文本" --scaling-w 2.5
 
 stdout 按行输出 JSON 事件(后端逐行解析):
@@ -71,7 +71,7 @@ def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h):
     return dict(hit=bool(accs[0] == 1.0), acc=round(float(accs[0]), 4))
 
 
-def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path):
+def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path, comp: float = 0.0):
     fps, w, h, total = C.probe(src)
     emit(dict(type="start", kind="video", input=src.name, total=total, w=w, h=h, fps=round(fps, 3)))
     mean_t = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
@@ -87,7 +87,8 @@ def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path):
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "-",
          "-i", str(src),
          "-map", "0:v", "-map", "1:a?",
-         "-vf", "scale=out_color_matrix=bt709,format=yuv420p",
+         "-vf", "scale=out_color_matrix=bt709,format=yuv420p,"
+                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
          "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
          "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
          "-c:a", "copy", str(part)],
@@ -104,20 +105,27 @@ def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path):
             if raw is None:
                 break
             batch = np.frombuffer(raw, dtype=np.uint8).reshape(-1, h, w, 3)
-            x = C.norm_frames(batch)
-            orig = x * std_t + mean_t
+            if comp:  # 色彩回补:嵌入前红绿各预减 N 级(等效蓝差回补;白底 B=255 顶格不能直接加蓝)。PSNR 对未补偿源
+                f = batch.astype(np.float32)
+                f[:, :, :, 0] = np.clip(f[:, :, :, 0] - comp, 0, 255)
+                f[:, :, :, 1] = np.clip(f[:, :, :, 1] - comp, 0, 255)
+                x = C.norm_frames(f)
+                base = torch.from_numpy(batch).cuda().permute(0, 3, 1, 2).float() / 255.0
+            else:
+                x = C.norm_frames(batch)
+                base = x * std_t + mean_t
             with torch.no_grad():
                 out = wam.embed(x, msg1.repeat(x.shape[0], 1))
             y8 = (out["imgs_w"] * std_t + mean_t).clamp(0, 1).mul(255).round().byte()
             yf = y8.float() / 255.0
-            mse = ((yf - orig) ** 2).mean(dim=(1, 2, 3))
+            mse = ((yf - base) ** 2).mean(dim=(1, 2, 3))
             psnr_samples.append((-10 * torch.log10(mse + 1e-12)).cpu().numpy())
             wm = y8.permute(0, 2, 3, 1).cpu().numpy()
             enc.stdin.write(wm.tobytes())
             n_done += len(batch)
             emit(dict(type="progress", done=n_done, total=total or n_done))
             last = len(batch) < B
-            del x, orig, out, y8, yf, mse, wm, batch
+            del x, base, out, y8, yf, mse, wm, batch
             if last:
                 break
     finally:
@@ -179,10 +187,18 @@ def main():
     ap.add_argument("--work-name", type=str, default="")
     ap.add_argument("--scaling-w", type=float, default=2.0)
     ap.add_argument("--crf", type=int, default=14)
+    ap.add_argument("--comp", type=float, default=-1.0,
+                    help="视频色彩回补:嵌入前红绿各预减 N 级,抵消泛黄/泛紫;"
+                         "<0=按强度自动配量(1.5→0.4,2.0→0.5,强度每+0.5约+0.1),0=关闭;图片路径恒不补偿")
     args = ap.parse_args()
     expect_id = C.derive_id(args.text)
     expect_bits = C.text_to_bits(args.text)
     C.OUTPUT.mkdir(exist_ok=True)
+    if args.input:
+        comp = round(args.comp if args.comp >= 0
+                     else min(0.8, max(0.3, 0.4 + 0.2 * (args.scaling_w - 1.5))), 2)
+    else:
+        comp = 0.0  # 图片无损链路实测白区色差仅 -0.04~-0.10 级,无需回补
 
     part = None
     try:
@@ -197,10 +213,10 @@ def main():
             final = out_name(src.stem, ".mp4")
             part = C.OUTPUT / f"{PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
             emit(dict(type="part", path=str(part), final=str(final)))
-            info = embed_video(wam, msg1, expect_bits, src, args.crf, part)
+            info = embed_video(wam, msg1, expect_bits, src, args.crf, part, comp)
             part.replace(final)
             meta = dict(source=str(src), out=str(final), work=args.work_name, text=args.text,
-                        id_hex=id_hex, scaling_w=args.scaling_w, crf=args.crf,
+                        id_hex=id_hex, scaling_w=args.scaling_w, crf=args.crf, comp=comp,
                         created_at=time.strftime("%Y-%m-%d %H:%M:%S"), **info)
             meta_path = final.with_name(final.stem + "_meta.json")
             meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

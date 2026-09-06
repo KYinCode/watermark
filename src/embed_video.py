@@ -33,6 +33,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=str, default=None, help="源视频;默认取 data\ 下唯一视频")
     ap.add_argument("--crf", type=int, default=14)
+    ap.add_argument("--scaling-w", type=float, default=2.0, help="嵌入强度;默认 2.0")
+    ap.add_argument("--comp", type=float, default=-1.0,
+                    help="色彩回补:嵌入前红绿各预减 N 级,抵消泛黄/泛紫;"
+                         "<0=按强度自动配量(1.5→0.4,2.0→0.5,强度每+0.5约+0.1),0=关闭")
     ap.add_argument("--out", type=str, default=None, help="成品路径;默认 output\<源名>_已加水印.mp4")
     args = ap.parse_args()
 
@@ -45,7 +49,11 @@ def main():
     mean_t = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
     std_t = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
 
-    wam = C.load_wam(scaling_w=2.0)
+    wam = C.load_wam(scaling_w=args.scaling_w)
+    comp = round(args.comp if args.comp >= 0
+                 else min(0.8, max(0.3, 0.4 + 0.2 * (args.scaling_w - 1.5))), 2)
+    print(f"[embed] 强度 scaling_w={args.scaling_w}  色彩回补 comp={comp}"
+          f"{'(自动)' if args.comp < 0 else ''}", flush=True)
     msg1 = torch.from_numpy(C.wm_msg_bits()).float().unsqueeze(0).cuda()
 
     dec = subprocess.Popen(
@@ -58,7 +66,8 @@ def main():
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "-",
          "-i", str(src),
          "-map", "0:v", "-map", "1:a?",
-         "-vf", "scale=out_color_matrix=bt709,format=yuv420p",
+         "-vf", "scale=out_color_matrix=bt709,format=yuv420p,"
+                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
          "-c:v", "libx264", "-preset", "medium", "-crf", str(args.crf),
          "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
          "-c:a", "copy", str(out_path)],
@@ -77,13 +86,20 @@ def main():
                 break
             batch = np.frombuffer(raw, dtype=np.uint8).reshape(-1, h, w, 3)
             tg = time.perf_counter()
-            x = C.norm_frames(batch)
-            orig = x * std_t + mean_t
+            if comp:  # 色彩回补:嵌入前红绿各预减 N 级(等效蓝差回补;白底 B=255 顶格不能直接加蓝)。PSNR 对未补偿源
+                f = batch.astype(np.float32)
+                f[:, :, :, 0] = np.clip(f[:, :, :, 0] - comp, 0, 255)
+                f[:, :, :, 1] = np.clip(f[:, :, :, 1] - comp, 0, 255)
+                x = C.norm_frames(f)
+                base = torch.from_numpy(batch).cuda().permute(0, 3, 1, 2).float() / 255.0
+            else:
+                x = C.norm_frames(batch)
+                base = x * std_t + mean_t
             with torch.no_grad():
                 out = wam.embed(x, msg1.repeat(x.shape[0], 1))
             y8 = (out["imgs_w"] * std_t + mean_t).clamp(0, 1).mul(255).round().byte()
             yf = y8.float() / 255.0
-            mse = ((yf - orig) ** 2).mean(dim=(1, 2, 3))
+            mse = ((yf - base) ** 2).mean(dim=(1, 2, 3))
             p = (-10 * torch.log10(mse + 1e-12)).cpu().numpy()
             psnr_samples.append(p)
             wm = y8.permute(0, 2, 3, 1).cpu().numpy()
@@ -94,7 +110,7 @@ def main():
                 el = time.perf_counter() - t0
                 eta = f", 预计还需 {el / n_done * (total_frames - n_done):.0f}s" if total_frames else ""
                 print(f"  进度 {n_done}/{total_frames or '?'} 帧 ({el:.0f}s{eta})", flush=True)
-            del x, orig, out, y8, yf, mse, wm
+            del x, base, out, y8, yf, mse, wm
             if len(batch) < B:
                 break
     finally:
@@ -126,7 +142,8 @@ def main():
                 wall_s=wall, embed_ms=1000 * t_embed / max(n_done, 1),
                 psnr_mean=float(psnrs.mean()), psnr_min=float(psnrs.min()),
                 psnr_p5=float(np.percentile(psnrs, 5)), size_mb=size_mb,
-                scaling_w=2.0, id_hex=json.loads(C.CODEBOOK.read_text(encoding="utf-8"))["id_hex"])
+                scaling_w=args.scaling_w, comp=comp,
+                id_hex=f"{C.derive_id(C.WM_TEXT):08x}")
     (C.OUTPUT / "成品_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print("[embed] 全部完成", flush=True)
 
