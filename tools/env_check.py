@@ -28,7 +28,14 @@ RUNTIME_PY = PROJ / "runtime" / "python" / "python.exe"
 BIN = PROJ / "bin"
 CKPT = PROJ / "third_party" / "watermark-anything" / "checkpoints" / "wam_mit.pth"
 FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
-LOCAL_PROXY = os.environ.get("WM_PROXY", "http://127.0.0.1:7897")  # 代理端口不同就设 WM_PROXY
+# 国内镜像(GitHub 加速前缀,这类服务时好时坏,所以备多个自动轮试;2026-09-06 实测 gh-proxy.com 活)
+FFMPEG_MIRRORS = [
+    "https://gh-proxy.com/" + FFMPEG_URL,
+    "https://ghfast.top/" + FFMPEG_URL,
+    "https://ghproxy.net/" + FFMPEG_URL,
+]
+PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+WM_PROXY = os.environ.get("WM_PROXY")  # 可选的手工指定代理(local_config.bat 里 set),没设就不存在
 FF_BASES = (r"C:\Environment\FFmpeg\FFmpeg_Builds\bin",  # 本机既有安装(兜底)
             r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin")
 PIP_CORE = [("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("python-multipart", "multipart"),
@@ -71,10 +78,10 @@ def pip(*args):
     return r.returncode == 0
 
 
-def dl(url, proxy=None):
+def dl(url, proxy=None, timeout=30):
     handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
     op = urllib.request.build_opener(*handlers)
-    r = op.open(url, timeout=60)
+    r = op.open(url, timeout=timeout)
     total = int(r.headers.get("Content-Length") or 0)
     buf, got = io.BytesIO(), 0
     while True:
@@ -90,37 +97,36 @@ def dl(url, proxy=None):
 
 
 def fetch_ffmpeg():
-    """下载 ffmpeg 静态版到项目 bin\\(直连->兜底代理->现场问用户;用户给的地址可记住)"""
+    """下载 ffmpeg 静态版到项目 bin\\。线路:直连 -> 国内镜像(自动) -> WM_PROXY -> 问用户(现场用,绝不记住)。"""
     BIN.mkdir(exist_ok=True)
-    data = None
-    try:
-        print("      直连下载 ffmpeg(~100MB)...")
-        data = dl(FFMPEG_URL)
-    except Exception as e:
-        print(f"      直连失败: {e}(Windows 下直连会自动走系统代理,若你开了系统代理仍失败多半是真不通)")
-        data = None
-        if port_open(LOCAL_PROXY):
-            print(f"      试本地兜底代理 {LOCAL_PROXY} ...")
-            try:
-                data = dl(FFMPEG_URL, proxy=LOCAL_PROXY)
-            except Exception as e2:
-                print(f"      兜底代理也失败: {e2}")
-        while data is None:
-            try:
-                addr = input("      你若开着代理,输入它的地址后回车重试(例: http://127.0.0.1:7890);直接回车=放弃: ").strip()
-            except EOFError:
-                addr = ""
-            if not addr:
-                print(f"      放弃下载。手动方案:下载 ffmpeg 后把 ffmpeg.exe/ffprobe.exe 放进 {BIN},"
-                      f"或设 WM_PROXY 后重跑")
+    attempts = [("直连", FFMPEG_URL)] + [(f"国内镜像{i}", u) for i, u in enumerate(FFMPEG_MIRRORS, 1)]
+    if WM_PROXY:
+        attempts.append(("你的代理 WM_PROXY", FFMPEG_URL))
+    data, via = None, ""
+    for label, url in attempts:
+        print(f"      尝试{label}...")
+        try:
+            data = dl(url, proxy=WM_PROXY if "代理" in label else None)
+            via = label
+            break
+        except Exception as e:
+            print(f"      {label} 失败: {e}")
+    wrong = 0
+    while data is None:
+        addr = ask_proxy()
+        if not addr:
+            print(f"      已放弃自动下载。手动办法:任何能上网的机器下载 ffmpeg win64 版,"
+                  f"把 ffmpeg.exe 和 ffprobe.exe 放进 {BIN},再重跑体检即可")
+            return False
+        try:
+            data = dl(FFMPEG_URL, proxy=addr, timeout=120)
+        except Exception as e:
+            wrong += 1
+            print(f"      这个地址不行: {e}")
+            if wrong >= 3:
+                print("      试了 3 次都没成,先放弃自动下载(上面的手动办法最稳)")
                 return False
-            try:
-                data = dl(FFMPEG_URL, proxy=addr)
-            except Exception as e2:
-                print(f"      这个地址也不行: {e2}")
-                continue
-            remember_proxy(addr)
-    print(f"      下载完成 {len(data) / 2**20:.0f} MB,解压中...")
+    print(f"      通过[{via}]下载完成 {len(data) / 2**20:.0f} MB,解压中...")
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         names = z.namelist()
         for exe in ("ffmpeg.exe", "ffprobe.exe"):
@@ -133,25 +139,13 @@ def fetch_ffmpeg():
     return True
 
 
-def port_open(addr):
+def ask_proxy():
+    print("      自动线路(直连 + 国内镜像)全部失败了。最后可以试你的代理:")
+    print("      如果你电脑开着 Clash/v2rayN 之类,把它的代理地址抄进来,例: http://127.0.0.1:7890")
     try:
-        socket.create_connection(("127.0.0.1", int(addr.rsplit(":", 1)[1])), timeout=1).close()
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def remember_proxy(addr):
-    """把用户现场输入的代理地址写进 webui\\local_config.bat,下次所有脚本自动使用"""
-    f = PROJ / "webui" / "local_config.bat"
-    try:
-        content = f.read_text(encoding="utf-8") if f.exists() else ""
-        if "WM_PROXY" not in content:
-            content += f'@echo off\r\nset "WM_PROXY={addr}"\r\n' if not content else f'set "WM_PROXY={addr}"\r\n'
-            f.write_text(content, encoding="utf-8")
-        print(f"      {OK} 代理地址已记住({f.name}),以后全自动,不用再输")
-    except OSError as e:
-        print(f"      记住代理失败(不影响本次): {e}")
+        return input("      不知道/没有代理就直接回车,给你手动下载的办法: ").strip()
+    except EOFError:
+        return ""
 
 
 def check_py():
@@ -218,10 +212,13 @@ def fix_deps():
         return
     if importlib.util.find_spec("torch") is None:
         print("      pip 装 torch cu124(约 2.5GB,耐心)...")
-        pip("install", "torch==2.5.1", "torchvision==0.20.1",
-            "--index-url", "https://download.pytorch.org/whl/cu124")
+        if not pip("install", "torch==2.5.1", "torchvision==0.20.1",
+                   "--index-url", "https://download.pytorch.org/whl/cu124"):
+            print("      torch 官方源没装上(网络原因);重跑本脚本可续,或配好代理后再试")
     print("      pip 补齐其余依赖...")
-    pip("install", *[n for n, _ in PIP_CORE])
+    if not pip("install", *[n for n, _ in PIP_CORE]):
+        print(f"      默认 PyPI 源失败,换清华镜像重试...")
+        pip("install", "-i", PIP_MIRROR, *[n for n, _ in PIP_CORE])
 
 
 def confirm():
