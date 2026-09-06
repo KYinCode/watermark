@@ -181,41 +181,50 @@ class EngineWorker:
     def __init__(self):
         self.proc = None
         self.wlock = threading.Lock()   # stdin 写锁
+        self.rlock = threading.RLock()  # 请求级互斥:预热与业务提取可能并发,同一 stdout 只允许一个读者
+        self._outq = None               # 当前 proc 的 stdout 行队列(由 _start_reader 投递)
         self.log = open(LOGS / "worker.log", "ab", buffering=0)
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    @staticmethod
-    def _readline_timeout(stream, timeout):
-        """限时读一行:超时/流异常返回 None。超时后遗留的阻塞读线程是 daemon,随进程退出。"""
+    def _start_reader(self, proc):
+        """单读取线程:逐行读 proc.stdout 入队,EOF 投 b"" 哨兵。
+        读取线程与 proc 绑定(每次 spawn 换新队列),避免"超时读一行"遗留的阻塞线程
+        抢走后续请求的首行响应,导致请求永不返回。"""
         q = queue.Queue()
+        stream = proc.stdout
 
-        def _read():
+        def _reader():
             try:
-                q.put(stream.readline())
+                for line in stream:
+                    q.put(line)
             except Exception:
+                pass
+            finally:
                 q.put(b"")
 
-        threading.Thread(target=_read, daemon=True).start()
-        try:
-            return q.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        threading.Thread(target=_reader, daemon=True, name="engine-stdout-reader").start()
+        self._outq = q
 
     def ensure(self):
         if self.alive():
             return
         self.log.write(f"\n[backend {iso()}] spawn worker\n".encode())
-        self.proc = subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(WEBUI / "engine_worker.py")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=self.log, cwd=str(PROJ),
             env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-        # 等 ready;readline 限时,引擎卡在 import 阶段一行不输出时也能按超时退出而非永久挂起
+        self.proc = proc
+        self._start_reader(proc)
+        # 等 ready;限时读,引擎卡在 import 阶段一行不输出时也能按超时退出而非永久挂起
         t0 = time.time()
         while time.time() - t0 < 30:
-            line = self._readline_timeout(self.proc.stdout, max(1.0, 30 - (time.time() - t0)))
+            try:
+                line = self._outq.get(timeout=max(1.0, 30 - (time.time() - t0)))
+            except queue.Empty:
+                continue
             if not line:
                 self.kill()
                 raise RuntimeError("提取引擎启动失败,详见 webui/data/logs/worker.log")
@@ -255,23 +264,26 @@ class EngineWorker:
             self.proc = None
 
     def request(self, req: dict, on_line=None) -> dict:
-        """发送请求并读取到该 id 的 result;期间进度经 on_line 回调"""
-        self.ensure()
-        self.send(req)
-        rid = req["id"]
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                self.kill()
-                raise RuntimeError("提取引擎意外退出,详见 webui/data/logs/worker.log")
-            try:
-                msg = json.loads(line.decode("utf-8", "replace"))
-            except json.JSONDecodeError:
-                continue
-            if on_line:
-                on_line(msg)
-            if msg.get("id") == rid and msg.get("type") == "result":
-                return msg
+        """发送请求并读取到该 id 的 result;期间进度经 on_line 回调。
+        互斥:预热(warm_async)与提取请求可能并发,若两个线程同读 proc.stdout,
+        被对方吞掉的 result 行会让请求永久等待(嵌入后的预热窗口最易触发)。"""
+        with self.rlock:
+            self.ensure()
+            self.send(req)
+            rid = req["id"]
+            while True:
+                line = self._outq.get()
+                if not line:
+                    self.kill()
+                    raise RuntimeError("提取引擎意外退出,详见 webui/data/logs/worker.log")
+                try:
+                    msg = json.loads(line.decode("utf-8", "replace"))
+                except json.JSONDecodeError:
+                    continue
+                if on_line:
+                    on_line(msg)
+                if msg.get("id") == rid and msg.get("type") == "result":
+                    return msg
 
     def warm_async(self):
         """后台预热模型(启动时/嵌入完成后),保证提取请求秒级响应"""
