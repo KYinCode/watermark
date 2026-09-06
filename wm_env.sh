@@ -16,8 +16,9 @@ for _ff in "$_PROJ_DIR/bin" "/c/Environment/FFmpeg/FFmpeg_Builds/bin" "/c/ffmpeg
   [ -x "$_ff/ffmpeg.exe" ] && export PATH="$_ff:$PATH" && break
 done
 
-# HF 缓存留在项目内
+# HF/torch 模型缓存留在项目内
 export HF_HOME="$_PROJ_DIR/hf_home"
+export TORCH_HOME="$_PROJ_DIR/torch_home"
 
 # python(wm2 环境):项目 runtime\ > 常见 conda 布局逐个探测
 for _py in "$_PROJ_DIR/runtime/python/python.exe" \

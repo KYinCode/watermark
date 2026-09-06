@@ -17,6 +17,7 @@ import numpy as np
 PROJ = Path(__file__).resolve().parent.parent
 REPO = PROJ / "third_party" / "watermark-anything"
 os.environ.setdefault("HF_HOME", str(PROJ / "hf_home"))  # HF 缓存留在项目内,搬家不丢
+os.environ.setdefault("TORCH_HOME", str(PROJ / "torch_home"))  # torchvision/lpips 权重同理
 
 
 def _resolve_tool(name: str) -> str:

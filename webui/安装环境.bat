@@ -39,6 +39,7 @@ set "PYEXE=%ROOT%\runtime\python\python.exe"
 
 :fix
 echo 用 Python: %PYEXE%
+set "PIP_CACHE_DIR=%ROOT%\runtime\pip_cache"
 echo.
 "%PYEXE%" tools\env_check.py --fix
 echo.
