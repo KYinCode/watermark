@@ -4,19 +4,26 @@
 _PROJ_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJ="$_PROJ_DIR"
 
-# 代理:尊重已设好的代理 > WM_PROXY 环境变量 > 探测本机 7897;都没有就走直连
+# 代理:尊重已设好的代理 > WM_PROXY 环境变量(也探测,死了不硬用)> 探测本机常见口
 if [ -z "$HTTP_PROXY" ] && [ -z "$http_proxy" ]; then
-  _px="${WM_PROXY:-http://127.0.0.1:7897}"
-  _port="$(echo "$_px" | grep -oE '[0-9]+$')"
-  if timeout 1 bash -c "</dev/tcp/127.0.0.1/$_port" 2>/dev/null; then
-    export HTTP_PROXY="$_px" HTTPS_PROXY="$_px" http_proxy="$_px" https_proxy="$_px"
+  _found=""
+  for _px in "${WM_PROXY:-}" "http://127.0.0.1:7890" "http://127.0.0.1:7897"; do
+    [ -n "$_px" ] || continue
+    _port="$(echo "$_px" | grep -oE '[0-9]+$')"
+    if timeout 1 bash -c "</dev/tcp/127.0.0.1/$_port" 2>/dev/null; then
+      _found="$_px"
+      break
+    fi
+  done
+  if [ -n "$_found" ]; then
+    export HTTP_PROXY="$_found" HTTPS_PROXY="$_found" http_proxy="$_found" https_proxy="$_found"
     export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1
   fi
-  unset _px _port
+  unset _px _port _found
 fi
 
 # ffmpeg/ffprobe:项目 bin\ 优先,回退常见安装位置(与 src/common.py 解析链同序)
-for _ff in "$_PROJ_DIR/bin" "/c/Environment/FFmpeg/FFmpeg_Builds/bin" "/c/ffmpeg/bin"; do
+for _ff in "$_PROJ_DIR/bin" "/c/Environment/FFmpeg/FFmpeg_Builds/bin" "/c/ffmpeg/bin" "/c/Program Files/ffmpeg/bin"; do
   [ -x "$_ff/ffmpeg.exe" ] && export PATH="$_ff:$PATH" && break
 done
 

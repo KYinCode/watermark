@@ -5,9 +5,11 @@ cd /d "%~dp0.."
 set "ROOT=%CD%"
 title wm2 环境安装器(所有依赖装进项目目录,不改系统)
 
-rem ---- 找现成 Python:项目 runtime\ > conda 常见位置 ----
+rem ---- 找现成 Python:local_config.bat 手工指定 > 项目 runtime\ > conda 常见位置(与启动WebUI.bat 同序) ----
 set "PYEXE="
-if exist "%ROOT%\runtime\python\python.exe" set "PYEXE=%ROOT%\runtime\python\python.exe"
+if exist "%ROOT%\webui\local_config.bat" call "%ROOT%\webui\local_config.bat"
+if defined WM2_PY if exist "%WM2_PY%" set "PYEXE=%WM2_PY%"
+if not defined PYEXE if exist "%ROOT%\runtime\python\python.exe" set "PYEXE=%ROOT%\runtime\python\python.exe"
 if not defined PYEXE for %%P in (
   "F:\Environment\Anaconda\envs\wm2\python.exe"
   "%USERPROFILE%\anaconda3\envs\wm2\python.exe"
@@ -55,6 +57,22 @@ del "%ROOT%\runtime\py310.zip"
 powershell -NoProfile -Command "(Get-Content '%ROOT%\runtime\python\python310._pth') -replace '#import site','import site' | Set-Content '%ROOT%\runtime\python\python310._pth'"
 echo [引导] 安装 pip...
 powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%ROOT%\runtime\get-pip.py'"
+if not exist "%ROOT%\runtime\get-pip.py" powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.aliyun.com/pypi/get-pip.py' -OutFile '%ROOT%\runtime\get-pip.py'"
+if exist "%ROOT%\runtime\get-pip.py" goto pip_ok
+echo [引导] get-pip.py 官方源和阿里云镜像都没通。若开着代理,把地址抄进来,例: http://127.0.0.1:7890
+set "PX2="
+set /p PX2=不知道/没代理就直接回车,给你手动办法:
+if "%PX2%"=="" goto pip_manual
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Proxy '%PX2%' -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%ROOT%\runtime\get-pip.py'"
+if exist "%ROOT%\runtime\get-pip.py" goto pip_ok
+
+:pip_manual
+echo [X] 没拿到 get-pip.py。手动办法:浏览器下载 https://bootstrap.pypa.io/get-pip.py
+echo     放到 %ROOT%\runtime\get-pip.py,然后重新双击本脚本
+pause
+exit /b 1
+
+:pip_ok
 "%ROOT%\runtime\python\python.exe" "%ROOT%\runtime\get-pip.py" --no-warn-script-location
 del "%ROOT%\runtime\get-pip.py" 2>nul
 set "PYEXE=%ROOT%\runtime\python\python.exe"
@@ -65,5 +83,5 @@ set "PIP_CACHE_DIR=%ROOT%\runtime\pip_cache"
 echo.
 "%PYEXE%" tools\env_check.py --fix
 echo.
-echo 结束。以后日常使用双击 webui\启动WebUI.bat 即可;体检:双击前按住说明看 README。
+echo 结束。以后日常使用双击 webui\启动WebUI.bat 即可;体检:命令行跑 python tools\env_check.py(说明见 README)。
 pause

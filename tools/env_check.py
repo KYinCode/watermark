@@ -97,15 +97,17 @@ def dl(url, proxy=None, timeout=30):
 
 
 def detect_proxy():
-    """探测本机代理:WM_PROXY 手工指定优先(不再探测直接信);否则探测常见默认口 7897。
+    """探测本机代理:WM_PROXY 手工指定优先(不再探测直接信);否则依次试常见默认口。
     活着返回代理地址,死了返回 None。"""
     if WM_PROXY:
         return WM_PROXY
-    try:
-        socket.create_connection(("127.0.0.1", 7897), timeout=1).close()
-        return "http://127.0.0.1:7897"
-    except OSError:
-        return None
+    for port in (7890, 7897):  # Clash 系默认 7890,Clash Verge 默认 7897
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return f"http://127.0.0.1:{port}"
+        except OSError:
+            continue
+    return None
 
 
 def fetch_ffmpeg():
@@ -165,7 +167,11 @@ def fetch_ffmpeg():
             if member is None:
                 print(f"      压缩包里没找到 {exe},格式可能变了,请手动处理")
                 return False
-            (BIN / exe).write_bytes(z.read(member))
+            try:
+                (BIN / exe).write_bytes(z.read(member))
+            except PermissionError:
+                print(f"      {exe} 被占用(WebUI 正开着?),关掉 WebUI 后重跑 --fix 即可")
+                return False
     print(f"      {OK} ffmpeg 就位: {BIN / 'ffmpeg.exe'}")
     return True
 
@@ -193,13 +199,30 @@ def check_ffmpeg():
     return False
 
 
+def torch_state():
+    """torch 安装状态:None=没装;'ok'=可用;其他字符串=装了但 import 失败(含原因)"""
+    if importlib.util.find_spec("torch") is None:
+        return None
+    try:
+        import torch
+        torch.__version__
+        return "ok"
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
 def check_deps():
     missing = [pip_name for pip_name, mod in PIP_CORE
                if not (importlib.util.find_spec(mod)
                        or (mod == "multipart" and importlib.util.find_spec("python_multipart")))]
-    torch_ok = importlib.util.find_spec("torch") is not None
-    if missing or not torch_ok:
-        print(f"[3/5] 依赖     {BAD} 缺: {', '.join(([] if torch_ok else ['torch']) + missing)}")
+    bad = list(missing)
+    ts = torch_state()
+    if ts is None:
+        bad.append("torch")
+    elif ts != "ok":
+        bad.append(f"torch(已装但损坏: {ts})")
+    if bad:
+        print(f"[3/5] 依赖     {BAD} 缺/坏: {', '.join(bad)}")
         return False
     import torch
     print(f"[3/5] 依赖     {OK} torch {torch.__version__} 等 {len(PIP_CORE) + 1} 项齐")
@@ -267,7 +290,16 @@ def fix_deps():
     if py_kind() == "other":
         print("  修复中止: 当前是系统 Python,不往里装。请先双击 webui\\安装环境.bat 生成项目内环境")
         return
-    if importlib.util.find_spec("torch") is None:
+    ts = torch_state()
+    if ts is not None and ts != "ok":
+        # 损坏的安装 pip 会认为"已满足"而跳过,必须先卸载再装
+        print(f"      torch 已装但损坏({ts}),先卸载再重装...")
+        pip("uninstall", "-y", "torch", "torchvision")
+        ts = torch_state()
+        if ts is not None:
+            print(f"      {BAD} 卸载没卸干净,请手动 pip uninstall torch torchvision 后重跑")
+            return
+    if ts is None:
         print("      装 torch cu124(约 2.5GB,耐心)...")
         robust_pip(
             "torch",
@@ -303,10 +335,13 @@ def main():
     if not check_deps():
         fixes.append(("依赖", fix_deps))
     check_ckpt()  # 只能给人工修法,不进自动修复
-    check_gpu()
+    gpu_ok = check_gpu()
     print("=== 结论 ===")
     if not fixes:
-        print("环境完好。启动:双击 webui\\启动WebUI.bat")
+        if gpu_ok:
+            print("环境完好。启动:双击 webui\\启动WebUI.bat")
+        else:
+            print("可启动,但 GPU/CUDA 不可用,打水印会失败(要 NVIDIA 显卡 + cu124 版 torch + 正常驱动)。")
         return
     print(f"需修复 {len(fixes)} 项: {', '.join(n for n, _ in fixes)}")
     if "--fix" not in sys.argv:

@@ -40,7 +40,7 @@
 - 需要:**Windows 10/11 + NVIDIA 显卡**(打水印用 GPU;只查水印也走 GPU,有卡即可)
 - 模型权重 `wam_mit.pth`(360MB)不随仓库分发:从旧机器拷到
   `third_party\watermark-anything\checkpoints\`,或从[官方地址](https://dl.fbaipublicfiles.com/watermark_anything/wam_mit.pth)下载
-- 不确定环境是否健康:双击 `webui\启动WebUI.bat --check`,或 `python tools/env_check.py`
+- 不确定环境是否健康:命令行运行 `webui\启动WebUI.bat --check`(双击带不了参数,需在 cmd/PowerShell 里执行),或 `python tools/env_check.py`
 - 日常停止:直接关服务窗口,或双击 `webui\停止WebUI.bat`
 - 换电脑/挪位置:见下文[搬家 / 换电脑](#搬家--换电脑),整个文件夹拷走即可
 

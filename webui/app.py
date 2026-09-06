@@ -11,6 +11,7 @@
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -185,6 +186,23 @@ class EngineWorker:
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
+    @staticmethod
+    def _readline_timeout(stream, timeout):
+        """限时读一行:超时/流异常返回 None。超时后遗留的阻塞读线程是 daemon,随进程退出。"""
+        q = queue.Queue()
+
+        def _read():
+            try:
+                q.put(stream.readline())
+            except Exception:
+                q.put(b"")
+
+        threading.Thread(target=_read, daemon=True).start()
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     def ensure(self):
         if self.alive():
             return
@@ -194,11 +212,12 @@ class EngineWorker:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=self.log, cwd=str(PROJ),
             env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-        # 等 ready
+        # 等 ready;readline 限时,引擎卡在 import 阶段一行不输出时也能按超时退出而非永久挂起
         t0 = time.time()
         while time.time() - t0 < 30:
-            line = self.proc.stdout.readline()
+            line = self._readline_timeout(self.proc.stdout, max(1.0, 30 - (time.time() - t0)))
             if not line:
+                self.kill()
                 raise RuntimeError("提取引擎启动失败,详见 webui/data/logs/worker.log")
             try:
                 msg = json.loads(line.decode("utf-8", "replace"))
@@ -207,6 +226,7 @@ class EngineWorker:
                 continue
             if msg.get("type") == "ready":
                 return
+        self.kill()
         raise RuntimeError("提取引擎启动超时")
 
     def send(self, obj: dict):
@@ -403,6 +423,10 @@ class QueueWorker(threading.Thread):
                 elif t == "error":
                     error = msg["message"]
                 if self.requested_cancel(job["id"]):
+                    # 引擎没有取消机制,只停读会死锁:引擎继续写 stdout,管道满后它阻塞在
+                    # print() 上永不退出,下面的 proc.wait() 就永远等不到 -> 必须整树强杀
+                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                   capture_output=True)
                     break
             rc = proc.wait()
         finally:
@@ -468,8 +492,11 @@ WORKER.warm_async()  # 启动即后台预热提取模型(R3.2 秒级响应)
 
 # ---------------------------------------------------------------- 系统自检(缓存)
 
-_sysinfo = {"torch": None, "ffmpeg": None, "gpu": None, "gpu_ts": 0.0}
+_sysinfo = {"torch": None, "torch_ts": 0.0, "ffmpeg": None, "ffmpeg_ts": 0.0,
+            "gpu": None, "gpu_ts": 0.0}
 _syslock = threading.Lock()
+_torch_probing = False
+RECHECK_S = 30.0  # 失败项的复检间隔:运行中把环境修好后,状态页半分钟内自愈,不必重启后端
 
 
 def _probe_torch():
@@ -486,6 +513,15 @@ def _probe_torch():
         return dict(cuda=False, name="", error=str(e))
 
 
+def _probe_torch_bg():
+    global _torch_probing
+    result = _probe_torch()
+    with _syslock:
+        _sysinfo["torch"] = result
+        _sysinfo["torch_ts"] = time.time()
+        _torch_probing = False
+
+
 def _probe_gpu():
     try:
         r = subprocess.run(
@@ -498,20 +534,32 @@ def _probe_gpu():
 
 
 def system_status():
+    global _torch_probing
+    now = time.time()
     with _syslock:
-        if _sysinfo["torch"] is None:
-            _sysinfo["torch"] = dict(cuda=None, name="", note="检测中…")
-            threading.Thread(target=lambda: _sysinfo.__setitem__(
-                "torch", _probe_torch()), daemon=True).start()
-        if _sysinfo["ffmpeg"] is None:
-            try:
-                subprocess.run([C.FF, "-version"], capture_output=True, timeout=10)
-                _sysinfo["ffmpeg"] = True
-            except Exception:
-                _sysinfo["ffmpeg"] = False
-        if time.time() - _sysinfo["gpu_ts"] > 5:
-            _sysinfo["gpu"] = _probe_gpu()
-            _sysinfo["gpu_ts"] = time.time()
+        t = _sysinfo["torch"]
+        if not _torch_probing and (
+                t is None or (not t.get("cuda") and now - _sysinfo["torch_ts"] > RECHECK_S)):
+            _torch_probing = True
+            if t is None:
+                _sysinfo["torch"] = dict(cuda=None, name="", note="检测中…")
+            threading.Thread(target=_probe_torch_bg, daemon=True).start()
+        need_ff = _sysinfo["ffmpeg"] is not True and now - _sysinfo["ffmpeg_ts"] > RECHECK_S
+        gpu_stale = now - _sysinfo["gpu_ts"] > 5
+    if need_ff:  # 子进程探测放锁外,失败也不拖住并发状态请求
+        try:
+            subprocess.run([C.FF, "-version"], capture_output=True, timeout=10)
+            ff_ok = True
+        except Exception:
+            ff_ok = False
+        with _syslock:
+            _sysinfo["ffmpeg"] = ff_ok
+            _sysinfo["ffmpeg_ts"] = now
+    if gpu_stale:
+        g = _probe_gpu()
+        with _syslock:
+            _sysinfo["gpu"] = g
+            _sysinfo["gpu_ts"] = now
     disk = shutil.disk_usage(PROJ)
     jobs = JOBS.snapshot()
     return dict(
@@ -1060,13 +1108,23 @@ if __name__ == "__main__":
     import asyncio
     import uvicorn
     import shutil as _sh
-    if sys.platform == "win32":
-        # Proactor 循环在客户端突然断开时会在 connection_lost 回调里抛
-        # ConnectionResetError 并带崩进程;Selector 循环无此问题
-        # (本项目子进程全是线程池内的阻塞调用,不依赖 Proactor 的异步子进程)。
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if not Path(C.FF).exists() and not _sh.which(C.FF):
         print("[警告] 未找到 ffmpeg:打水印/预览会失败。运行 webui\\安装环境.bat 自动下载到项目 bin\\,"
               "或在 webui\\local_config.bat 里 set \"WM_FFMPEG=你的ffmpeg目录\"", flush=True)
     print(f"wm2 水印工作台 -> http://127.0.0.1:{PORT}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    if sys.platform != "win32":
+        uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    else:
+        # Windows 必须用 Selector 循环:Proactor 在客户端突然断开(浏览器杀预连接等)时会在
+        # connection_lost 回调里抛 ConnectionResetError,反复出现拖垮服务。
+        # set_event_loop_policy 在 uvicorn>=0.36 已失效——它把 loop_factory 在 win32 写死成
+        # ProactorEventLoop(传 loop="asyncio" 也一样),完全不看 policy;
+        # 所以这里自建 Selector 循环、走低层 serve(),不依赖 uvicorn 版本的循环选择行为。
+        loop = asyncio.SelectorEventLoop()
+        asyncio.set_event_loop(loop)
+        try:
+            server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
+                                                   log_level="warning"))
+            loop.run_until_complete(server.serve())
+        finally:
+            loop.close()

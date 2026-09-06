@@ -31,7 +31,8 @@ dependencies:
       - typing-extensions==4.16.0
       - MarkupSafe==3.0.3
       - mpmath==1.3.0
-      # WebUI 后端:
+      # WebUI 后端(uvicorn 故意不锁版本:app.py __main__ 自建 Selector 事件循环,
+      # 不受 uvicorn>=0.36 在 Windows 写死 Proactor、无视 event loop policy 的影响):
       - fastapi
       - uvicorn
       - python-multipart
