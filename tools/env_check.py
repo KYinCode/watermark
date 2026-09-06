@@ -90,7 +90,7 @@ def dl(url, proxy=None):
 
 
 def fetch_ffmpeg():
-    """下载 ffmpeg 静态版到项目 bin\\(直连失败自动尝试本地代理)"""
+    """下载 ffmpeg 静态版到项目 bin\\(直连->兜底代理->现场问用户;用户给的地址可记住)"""
     BIN.mkdir(exist_ok=True)
     data = None
     try:
@@ -98,19 +98,28 @@ def fetch_ffmpeg():
         data = dl(FFMPEG_URL)
     except Exception as e:
         print(f"      直连失败: {e}(Windows 下直连会自动走系统代理,若你开了系统代理仍失败多半是真不通)")
-        try:
-            socket.create_connection(("127.0.0.1", int(LOCAL_PROXY.rsplit(":", 1)[1])), timeout=1).close()
-        except OSError:
-            print(f"      本地 {LOCAL_PROXY} 也不通。两条路:"
-                  f"①开好代理后设环境变量 WM_PROXY=你的代理地址 再重跑;"
-                  f"②手动下载 ffmpeg,把 ffmpeg.exe/ffprobe.exe 放进 {BIN}")
-            return False
-        print(f"      改走本地代理 {LOCAL_PROXY}...")
-        try:
-            data = dl(FFMPEG_URL, proxy=LOCAL_PROXY)
-        except Exception as e:
-            print(f"      代理下载也失败: {e}")
-            return False
+        data = None
+        if port_open(LOCAL_PROXY):
+            print(f"      试本地兜底代理 {LOCAL_PROXY} ...")
+            try:
+                data = dl(FFMPEG_URL, proxy=LOCAL_PROXY)
+            except Exception as e2:
+                print(f"      兜底代理也失败: {e2}")
+        while data is None:
+            try:
+                addr = input("      你若开着代理,输入它的地址后回车重试(例: http://127.0.0.1:7890);直接回车=放弃: ").strip()
+            except EOFError:
+                addr = ""
+            if not addr:
+                print(f"      放弃下载。手动方案:下载 ffmpeg 后把 ffmpeg.exe/ffprobe.exe 放进 {BIN},"
+                      f"或设 WM_PROXY 后重跑")
+                return False
+            try:
+                data = dl(FFMPEG_URL, proxy=addr)
+            except Exception as e2:
+                print(f"      这个地址也不行: {e2}")
+                continue
+            remember_proxy(addr)
     print(f"      下载完成 {len(data) / 2**20:.0f} MB,解压中...")
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         names = z.namelist()
@@ -122,6 +131,27 @@ def fetch_ffmpeg():
             (BIN / exe).write_bytes(z.read(member))
     print(f"      {OK} ffmpeg 就位: {BIN / 'ffmpeg.exe'}")
     return True
+
+
+def port_open(addr):
+    try:
+        socket.create_connection(("127.0.0.1", int(addr.rsplit(":", 1)[1])), timeout=1).close()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def remember_proxy(addr):
+    """把用户现场输入的代理地址写进 webui\\local_config.bat,下次所有脚本自动使用"""
+    f = PROJ / "webui" / "local_config.bat"
+    try:
+        content = f.read_text(encoding="utf-8") if f.exists() else ""
+        if "WM_PROXY" not in content:
+            content += f'@echo off\r\nset "WM_PROXY={addr}"\r\n' if not content else f'set "WM_PROXY={addr}"\r\n'
+            f.write_text(content, encoding="utf-8")
+        print(f"      {OK} 代理地址已记住({f.name}),以后全自动,不用再输")
+    except OSError as e:
+        print(f"      记住代理失败(不影响本次): {e}")
 
 
 def check_py():
