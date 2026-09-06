@@ -98,6 +98,14 @@ python src/embed_images.py                           # 只嵌图片
   `setparams` 才能写全(引擎已内置)。
 - 已知边界:组合搬运一条龙在 UI 录屏类内容上未达(详见 docs/验收报告.md 第 5 节)。
 
+## 第三方组件与致谢
+
+- **[watermark-anything](https://github.com/facebookresearch/watermark-anything)**(Meta FAIR):
+  水印模型与推理代码,MIT License。本项目以源码形式内置在 `third_party\watermark-anything\`
+  (未做修改,对方 LICENSE 原样保留);模型权重 `wam_mit.pth` 同为 MIT,不随本仓库分发,
+  可从 [官方地址](https://dl.fbaipublicfiles.com/watermark_anything/wam_mit.pth) 下载放入
+  `checkpoints\`,或直接从旧机器拷贝。
+
 ## 搬家 / 换电脑
 
 项目按"自包含"设计:可下载的依赖一律装在项目目录内,代码里不写死任何盘符。
