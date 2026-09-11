@@ -2,8 +2,8 @@
 """wm2 公共库:WAM 模型加载、ffmpeg 流水线 IO、消息码本、解码统计。
 
 可移植性约定(2026-09-06):所有外部工具路径都不写死——
-ffmpeg/ffprobe 解析顺序:环境变量 WM_FFMPEG → 项目 bin\ → PATH → 常见安装位置;
-pip/HF 等可下载资源一律装/缓存在项目目录内(runtime\、hf_home\)。
+ffmpeg/ffprobe 解析顺序:环境变量 WM_FFMPEG → 项目 bin 目录 → PATH → 常见安装位置;
+pip/HF 等可下载资源一律装/缓存在项目目录内(runtime\\、hf_home\\)。
 """
 import hashlib
 import json
@@ -319,14 +319,16 @@ def selfcheck_frame(wam, product_path, expect_bits, frame_no, w, h, fps):
 
 
 def _read_exact(stream, nbytes):
-    """读满 nbytes;EOF 时返回已有部分(可能不足),完全无数据返回 None"""
+    """读满 nbytes;EOF 时返回已有部分(可能不足),完全无数据返回 None。
+    返回 bytearray(可写):np.frombuffer 包出的数组因此可写,torch.from_numpy
+    共享其内存时不会触发 NumPy non-writable UserWarning,且无额外复制。"""
     buf = bytearray()
     while len(buf) < nbytes:
         chunk = stream.read(nbytes - len(buf))
         if not chunk:
             break
         buf.extend(chunk)
-    return bytes(buf) if buf else None
+    return buf if buf else None
 
 
 def embed_video(wam, msg1, expect_bits, src: Path, crf: int, part: Path,
