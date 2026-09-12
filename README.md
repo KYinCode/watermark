@@ -38,7 +38,8 @@
 ```
 
 - 需要:**Windows 10/11 + NVIDIA 显卡**(打水印用 GPU;只查水印也走 GPU,有卡即可)
-- 模型权重 `wam_mit.pth`(360MB)不随仓库分发:从旧机器拷到
+- 模型权重 `wam_mit.pth`(360MB)不随仓库分发(官方配置 `params.json` 已入库,clone 即有):
+  体检报缺后 `python tools/env_check.py --fix` 自动下载;或从旧机器拷到
   `third_party\watermark-anything\checkpoints\`,或从[官方地址](https://dl.fbaipublicfiles.com/watermark_anything/wam_mit.pth)下载
 - 不确定环境是否健康:命令行运行 `webui\启动WebUI.bat --check`(双击带不了参数,需在 cmd/PowerShell 里执行),或 `python tools/env_check.py`
 - 日常停止:直接关服务窗口,或双击 `webui\停止WebUI.bat`
@@ -134,16 +135,18 @@ python tools/env_check.py                             # 环境体检(--fix 自�
 项目按"自包含"设计:所有下载的依赖都装在项目目录里,代码零写死路径。
 
 - **同机挪位置**:直接剪切整个文件夹,双击启动即可。
-- **换新电脑**:① 整夹拷贝或 `git clone`(模型权重需单独拷);
+- **换新电脑**:① 整夹拷贝或 `git clone`(模型权重 360MB 需单独补:`python tools/env_check.py --fix` 自动下载,或从旧机器拷);
   ② 双击 `webui\安装环境.bat`(自动下载 Python 内嵌版、依赖、ffmpeg 到项目目录,不需要 conda、不需要管理员);
   ③ 双击 `webui\启动WebUI.bat`。
-- 下载线路:直连(自动吃系统代理/TUN)→ 本机代理探测(7897 或 `WM_PROXY` 指定)→ 国内镜像轮试 → 问代理端口(3 次)→ 手动指引,全链失败也能手动落位。
+- 下载线路:直连(自动吃系统代理/TUN)→ 本机代理探测(7890/7897 或 `WM_PROXY` 指定)→ 国内镜像轮试(仅 ffmpeg)→ 问代理端口(3 次,绝不记住)→ 手动指引。
+  大文件断点续传(连接中断自动从断点继续;torch 走 pip 的 `--resume-retries`);模型权重无镜像,只有直连/代理两条线路,下载完做 sha256 校验。
 - 手工覆盖:新建 `webui\local_config.bat` 写 `set "WM2_PY=..."` 或 `set "WM_FFMPEG=..."`。
 
 ## 已知边界与注意事项
 
 - 组合搬运一条龙在 UI 录屏类内容上未达(其余场景达标);黑边偶发绿边为 4:2:0 物理代价。
 - 需要 NVIDIA GPU;CPU 无法运行推理。
+- 启动自愈:依赖缺失导致 WebUI 起不来时,`启动WebUI.bat` 会自动诊断、补装依赖并重试一次(最多一轮,绝不循环),修好自动补开浏览器;torch 只在打水印/提取的引擎子进程里加载,缺 torch 不挡启动,由任务报错和状态页 GPU 检测暴露。
 - WebUI 仅监听 127.0.0.1,无鉴权,请勿放行到公网。
 - 同一台机器请勿同时跑两个打水印任务(GPU 严格串行,队列已自动处理)。
 
@@ -152,7 +155,8 @@ python tools/env_check.py                             # 环境体检(--fix 自�
 - **[watermark-anything](https://github.com/facebookresearch/watermark-anything)**(Meta FAIR):
   水印模型与推理代码,MIT License。本项目以源码形式内置在 `third_party\watermark-anything\`
   (未做修改,对方 LICENSE 原样保留);模型权重 `wam_mit.pth` 同为 MIT,不随本仓库分发,
-  可从 [官方地址](https://dl.fbaipublicfiles.com/watermark_anything/wam_mit.pth) 下载放入
+  可 `python tools/env_check.py --fix` 自动下载(带 sha256 校验),或从
+  [官方地址](https://dl.fbaipublicfiles.com/watermark_anything/wam_mit.pth) 下载放入
   `checkpoints\`,或直接从旧机器拷贝。
 
 ## 许可证

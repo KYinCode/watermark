@@ -580,7 +580,8 @@ def system_status():
     return dict(
         gpu=_sysinfo["gpu"], torch=_sysinfo["torch"], ffmpeg_ok=_sysinfo["ffmpeg"],
         weights_ok=(C.PROJ / "third_party" / "watermark-anything" / "checkpoints" /
-                    "wam_mit.pth").exists(),
+                    "params.json").exists() and (C.PROJ / "third_party" / "watermark-anything" /
+                                                 "checkpoints" / "wam_mit.pth").exists(),
         codebook_count=len(cb_works()),
         queue=dict(running=sum(1 for j in jobs if j["status"] == "running"),
                    queued=sum(1 for j in jobs if j["status"] == "queued")),

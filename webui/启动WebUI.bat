@@ -66,8 +66,57 @@ exit /b 1
 
 :do_start
 rem 浏览器延迟打开;服务跑在本窗口前台,关窗即停(杀干净请用 停止WebUI.bat)
+rem stderr -> temp file (printed on crash); stdout banner stays on console.
+rem Self-heal: if app.py exits nonzero, probe `import fastapi, uvicorn` (~1s);
+rem missing deps -> one fix + retry round, never loops.
+rem Coverage note: app.py never imports torch (engine subprocess only), so a
+rem missing torch does NOT block startup and is NOT handled here (see README).
 start /min cmd /c "ping -n 5 127.0.0.1 >nul & start "" http://127.0.0.1:8765/"
-"%PYEXE%" webui\app.py
+set "ERRLOG=%TEMP%\wm2_start_stderr.txt"
+"%PYEXE%" webui\app.py 2>"%ERRLOG%"
+if not errorlevel 1 goto serve_done
+set "RCCODE=%errorlevel%"
+echo.
+echo [!] WebUI 进程异常退出,退出码 %RCCODE%,诊断原因中...
+"%PYEXE%" -c "import fastapi, uvicorn" 2>nul
+if errorlevel 1 goto need_fix
+echo [X] 依赖完好,不是缺包能解决的问题。常见原因:8765 被抢 / app.py 报错 / 缺项目文件。原始错误输出:
+type "%ERRLOG%"
+echo     照上面输出排查;看不懂就把这段原样发出来问。
+pause
+exit /b 1
+
+:need_fix
+rem Safety valve: env_check only installs into project envs (runtime\python or conda env wm2).
+set "PROJENV="
+echo %PYEXE% | findstr /i /c:"envs\wm2" >nul && set "PROJENV=1"
+echo %PYEXE% | findstr /i /c:"runtime\python" >nul && set "PROJENV=1"
+if not defined PROJENV goto fix_manual
+echo [!] 诊断:fastapi/uvicorn 导入失败,是依赖缺失/损坏。
+set "ACT="
+set /p ACT=自动修复? 回车=修复,可能要几分钟 / 输入 N=只看指引: 
+if /i "%ACT%"=="N" goto fix_manual
+"%PYEXE%" tools\env_check.py --fix
+echo.
+echo 正在重试启动,最多自愈一轮,再失败就停...
+rem Re-open the browser only after the port is really listening (the first delayed tab is a dead page).
+start /min cmd /c "for /l %%i in (1,1,30) do (netstat -ano | findstr LISTENING | findstr :8765 >nul && start "" http://127.0.0.1:8765/ && exit & ping -n 3 127.0.0.1 >nul)"
+"%PYEXE%" webui\app.py 2>"%ERRLOG%"
+if not errorlevel 1 goto serve_done
+echo.
+echo [X] 修复后重试仍然失败。原始错误输出:
+type "%ERRLOG%"
+echo     不再自动重试。可手动重跑 python tools\env_check.py --fix 后再启动,或照上面输出排查。
+pause
+exit /b 1
+
+:fix_manual
+echo     手动指引:双击 webui\安装环境.bat 把依赖装进项目内环境;系统 Python 会被 env_check 拒绝安装,必须先跑安装环境.bat。原始错误输出:
+type "%ERRLOG%"
+pause
+exit /b 1
+
+:serve_done
 pause
 exit /b 0
 

@@ -1,7 +1,9 @@
 # ===== 大文件 / 可再生成素材(本地保留,不入库) =====
 data/
 hf_home/
-third_party/watermark-anything/checkpoints/
+# 注意:只能忽略目录"内容"(/*),不能忽略目录本身,否则下面的 ! 白名单对 git 不生效
+third_party/watermark-anything/checkpoints/*
+!third_party/watermark-anything/checkpoints/params.json
 
 # 成品区:只保留验收证据(小体积 JSON / 样本图),排除成品视频与图片
 output/*

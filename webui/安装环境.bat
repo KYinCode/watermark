@@ -82,6 +82,15 @@ echo 用 Python: %PYEXE%
 set "PIP_CACHE_DIR=%ROOT%\runtime\pip_cache"
 echo.
 "%PYEXE%" tools\env_check.py --fix
+if not errorlevel 1 goto fix_ok
+echo.
+echo [!] 仍有未修复项,请看上方输出逐条处理后,重新双击本脚本。
+echo     注:系统版 Python 会被 env_check 拒绝安装,需先跑本脚本生成项目内环境。
+pause
+exit /b 1
+
+:fix_ok
 echo.
 echo 结束。以后日常使用双击 webui\启动WebUI.bat 即可;体检:命令行跑 python tools\env_check.py(说明见 README)。
 pause
+exit /b 0
