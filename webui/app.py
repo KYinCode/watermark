@@ -10,6 +10,7 @@
 """
 import hashlib
 import json
+import logging
 import math
 import os
 import queue
@@ -31,6 +32,7 @@ from starlette.datastructures import MutableHeaders
 PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ / "src"))
 import common as C  # noqa: E402
+import wmlog  # noqa: E402  (统一日志基建,纯标准库)
 
 from store import CodebookError, add_work, delete_work, edit_work, load as cb_load, works as cb_works  # noqa: E402
 
@@ -42,6 +44,9 @@ JOBS_JSON = DATA_DIR / "jobs.json"
 for d in (DATA_DIR, LOGS, C.OUTPUT, C.DATA):
     d.mkdir(parents=True, exist_ok=True)
 
+wmlog.setup_backend(LOGS)
+log = logging.getLogger("wm.app")
+
 MEDIA_EXTS = C.VIDEO_EXTS | C.IMG_EXTS
 PORT = 8765
 
@@ -52,6 +57,32 @@ app = FastAPI(title="wm2 水印工作台")
 
 def iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _thread_excepthook(args):
+    """线程未捕获异常兜底记录(队列线程等自有 try/except,这里是双保险)。"""
+    log.error("未捕获线程异常(线程 %s)", getattr(args.thread, "name", "?"),
+              exc_info=args.exc_info)
+
+
+threading.excepthook = _thread_excepthook
+
+# 启动清理:任务日志保留 30 天(实现见 wmlog.cleanup_logs,只删 job_id 形态文件);
+# worker.log 超 10MB 轮转为 .1
+_removed, _rotated = wmlog.cleanup_logs(LOGS)
+if _removed:
+    log.info("启动清理:删除 %d 个超过 30 天的任务日志", _removed)
+if _rotated:
+    log.info("worker.log 超过 10MB,已轮转为 worker.log.1")
+
+
+def _tail_text(path: Path, lines: int = 15) -> str:
+    """读日志文件尾部若干行(失败归因兜底用)"""
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(data[-lines:])[-2000:]
 
 
 def safe_name(name: str) -> str:
@@ -119,23 +150,30 @@ class JobStore:
             try:
                 self.jobs = json.loads(JOBS_JSON.read_text(encoding="utf-8"))["jobs"]
             except Exception as e:
-                print(f"[warn] jobs.json 解析失败({e});历史任务列表已清空", flush=True)
+                log.warning("jobs.json 解析失败(%s);历史任务列表已清空", e)
                 self.jobs = []
         # 重启恢复:running -> interrupted(允许重新排队);清理半成品
         changed = False
+        recovered = 0
         for j in self.jobs:
             if j["status"] == "running":
                 j["status"] = "interrupted"
                 j["error"] = j.get("error") or "后端重启,任务中断"
                 changed = True
+                recovered += 1
+        cleaned = 0
         for part in C.OUTPUT.glob(f"{C.PART_PREFIX}*"):
             try:
                 part.unlink()
-                changed = True
+                cleaned += 1
             except OSError:
                 pass
         if changed or not JOBS_JSON.exists():
             self.save(force=True)
+        if recovered:
+            log.warning("重启恢复:%d 个运行中任务标记为 interrupted(可在任务页重新排队)", recovered)
+        if cleaned:
+            log.info("启动清理:删除 %d 个 .part 半成品", cleaned)
 
     def save(self, force=False):
         now = time.time()
@@ -160,6 +198,7 @@ class JobStore:
         with self.lock:
             self.jobs.append(job)
         self.save(force=True)
+        log.info("任务创建 %s | %s | %s", job["id"], label, params)
         return job
 
     def get(self, job_id) -> dict:
@@ -220,6 +259,7 @@ class EngineWorker:
             stderr=self.log, cwd=str(PROJ),
             env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         self.proc = proc
+        log.info("提取引擎拉起(PID %s)", getattr(proc, "pid", "?"))
         self._start_reader(proc)
         # 等 ready;限时读,引擎卡在 import 阶段一行不输出时也能按超时退出而非永久挂起
         t0 = time.time()
@@ -230,6 +270,7 @@ class EngineWorker:
                 continue
             if not line:
                 self.kill()
+                log.warning("提取引擎启动失败(ready 前 EOF),详见 webui/data/logs/worker.log")
                 raise RuntimeError("提取引擎启动失败,详见 webui/data/logs/worker.log")
             try:
                 msg = json.loads(line.decode("utf-8", "replace"))
@@ -237,8 +278,10 @@ class EngineWorker:
                 self.log.write(b"[worker][nonjson] " + line)
                 continue
             if msg.get("type") == "ready":
+                log.info("提取引擎就绪,耗时 %.1fs", time.time() - t0)
                 return
         self.kill()
+        log.warning("提取引擎启动超时(30s 内未 ready)")
         raise RuntimeError("提取引擎启动超时")
 
     def send(self, obj: dict):
@@ -256,6 +299,7 @@ class EngineWorker:
 
     def kill(self):
         if self.proc is not None:
+            log.info("终止提取引擎(PID %s)", getattr(self.proc, "pid", "?"))
             try:
                 self.proc.kill()
             except Exception:
@@ -278,6 +322,7 @@ class EngineWorker:
                 line = self._outq.get()
                 if not line:
                     self.kill()
+                    log.warning("提取引擎意外退出(请求 %s 在途被丢弃)", rid)
                     raise RuntimeError("提取引擎意外退出,详见 webui/data/logs/worker.log")
                 try:
                     msg = json.loads(line.decode("utf-8", "replace"))
@@ -294,8 +339,10 @@ class EngineWorker:
             try:
                 self.request(dict(id=f"warm-{int(time.time())}", cmd="warm"))
                 self.log.write(f"[backend {iso()}] worker warmed\n".encode())
+                log.info("提取模型预热完成")
             except Exception as e:
                 self.log.write(f"[backend {iso()}] warm failed: {e}\n".encode())
+                log.warning("提取模型预热失败:%s", e)
         threading.Thread(target=_warm, daemon=True).start()
 
 
@@ -323,6 +370,7 @@ class QueueWorker(threading.Thread):
             try:
                 (self.run_embed if job["kind"].startswith("embed") else self.run_extract)(job)
             except Exception as e:
+                log.exception("队列线程处理任务异常 %s(%s)", job.get("id"), job.get("label"))
                 self.finish(job, "failed", error=f"{type(e).__name__}: {e}")
 
     # ---- 公共 ----
@@ -376,6 +424,19 @@ class QueueWorker(threading.Thread):
                     if x["id"] == job["id"]:
                         JOBS.jobs[i] = cur
             JOBS.save(force=True)
+            dur = ""
+            if cur.get("started_at") and cur.get("finished_at"):
+                try:
+                    secs = int(datetime.fromisoformat(cur["finished_at"]).timestamp()
+                               - datetime.fromisoformat(cur["started_at"]).timestamp())
+                    dur = f" | 耗时 {secs}s"
+                except (ValueError, OSError):
+                    pass
+            msg = f"任务{dict(done='完成', failed='失败', canceled='已取消', interrupted='已中断')[status]}" \
+                  f" {cur['label']} (id={job['id']}{dur})"
+            if error:
+                msg += f" | error: {error}"
+            (log.info if status == "done" else log.warning)(msg)
 
     def requested_cancel(self, job_id) -> bool:
         return any(x["id"] == job_id and x.get("cancel_req") for x in JOBS.snapshot())
@@ -397,15 +458,19 @@ class QueueWorker(threading.Thread):
             cmd += ["--input", p["sources"][0]]
         else:
             cmd += ["--images", *p["sources"]]
+        log.info("嵌入任务开始 %s | %s", job["id"], " ".join(cmd))
         log_f = open(LOGS / f"{job['id']}.log", "ab", buffering=0)
         log_f.write(f"[backend {iso()}] {' '.join(cmd)}\n".encode())
         self.set_status(job, "running", started_at=iso())
         self.set_progress(job, phase="加载模型")
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # stderr 直写任务日志文件(不并进 stdout):stdout 保持纯 JSON 协议通道,
+        # 引擎内任何第三方 stderr 输出(torch 警告等)都不会再被当成协议行/错误文本
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log_f,
                                 stdin=subprocess.DEVNULL, cwd=str(PROJ),
                                 env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         job_real = job
         result, error, got_done = {}, "", False
+        last_nonjson = ""  # 协议 error 事件缺失时的兜底(取最后一条,新警告不会顶掉真错误)
         try:
             for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").rstrip()
@@ -413,7 +478,8 @@ class QueueWorker(threading.Thread):
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
-                    error = error or line  # 引擎报错栈
+                    last_nonjson = line
+                    log.warning("引擎 stdout 出现非 JSON 行(协议污染?): %s", line[:200])
                     continue
                 t = msg.get("type")
                 if t == "start":
@@ -440,6 +506,7 @@ class QueueWorker(threading.Thread):
                 if self.requested_cancel(job["id"]):
                     # 引擎没有取消机制,只停读会死锁:引擎继续写 stdout,管道满后它阻塞在
                     # print() 上永不退出,下面的 proc.wait() 就永远等不到 -> 必须整树强杀
+                    log.warning("任务 %s 请求取消,整树强杀嵌入引擎(PID %s)", job["id"], proc.pid)
                     subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                                    capture_output=True)
                     break
@@ -458,6 +525,12 @@ class QueueWorker(threading.Thread):
             WORKER.warm_async()  # 嵌入完成后回填预热,提取即刻秒级可用
             return
         self._cleanup_part(cur)
+        # 失败归因:协议 error 事件 > 最后一条非 JSON 行 > 任务日志尾部(引擎启动即崩时
+        # 堆栈在 stderr -> 任务日志里,只有回读才能给用户可读的错误)
+        if not error and last_nonjson:
+            error = last_nonjson
+        if not error:
+            error = _tail_text(LOGS / f"{job['id']}.log")
         self.finish(job_real, "failed", error=error or f"引擎退出码 {rc}")
 
     @staticmethod
@@ -473,6 +546,7 @@ class QueueWorker(threading.Thread):
 
     def run_extract(self, job):
         p = job["params"]
+        log.info("提取任务开始 %s | %s | %s", job["id"], job["label"], p)
         self.set_status(job, "running", started_at=iso())
         self.set_progress(job, done=0, total=0, phase="准备提取引擎")
         req = dict(id=job["id"], cmd={"image": "extract_image", "video": "extract_video",
@@ -640,6 +714,7 @@ async def api_works_add(req: Request):
         w = add_work(b.get("name", ""), b.get("text", ""), b.get("note", ""))
     except CodebookError as e:
         raise HTTPException(400, str(e))
+    log.info("码本新建作品 %s(id=%s)", w.get("name", ""), w.get("id_hex", "?"))
     return dict(w, usage=0)
 
 
@@ -647,17 +722,21 @@ async def api_works_add(req: Request):
 async def api_works_edit(id_hex: str, req: Request):
     b = await req.json()
     try:
-        return edit_work(id_hex, b.get("name"), b.get("note"))
+        w = edit_work(id_hex, b.get("name"), b.get("note"))
     except CodebookError as e:
         raise HTTPException(400, str(e))
+    log.info("码本编辑作品 %s", id_hex)
+    return w
 
 
 @app.delete("/api/works/{id_hex}")
 def api_works_del(id_hex: str):
     try:
-        return delete_work(id_hex)
+        w = delete_work(id_hex)
     except CodebookError as e:
         raise HTTPException(400, str(e))
+    log.info("码本删除作品 %s(%s)", id_hex, w.get("name", "") if isinstance(w, dict) else "")
+    return w
 
 
 # ---------------------------------------------------------------- API:浏览/探测/上传/预览
@@ -975,11 +1054,31 @@ def api_job_log(job_id: str):
     return data[-20000:]
 
 
+# 系统日志查看(白名单制,防任意路径读取;前端自检面板「系统日志」弹层使用)
+SYS_LOGS = {"backend": "backend.log", "worker": "worker.log"}
+
+
+@app.get("/api/logs/{name}")
+def api_sys_log(name: str):
+    fname = SYS_LOGS.get(name)
+    if fname is None:
+        raise HTTPException(404, "未知日志(仅支持 backend/worker)")
+    f = LOGS / fname
+    if not f.exists():
+        return ""
+    try:
+        data = f.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise HTTPException(500, f"日志读取失败: {e}")
+    return data[-20000:]
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def api_job_cancel(job_id: str):
     job = JOBS.get(job_id)
     if job["status"] in ("done", "failed", "canceled"):
         raise HTTPException(400, f"任务已{job['status']},无法取消")
+    log.info("请求取消任务 %s(%s,当前状态 %s)", job_id, job["label"], job["status"])
     with JOBS.lock:
         job["cancel_req"] = True
         if job["status"] == "queued":
@@ -999,6 +1098,7 @@ def api_job_requeue(job_id: str):
     job = JOBS.get(job_id)
     if job["status"] not in ("interrupted", "failed", "canceled"):
         raise HTTPException(400, "仅中断/失败/取消的任务可重新排队")
+    log.info("任务重新排队 %s(%s,原状态 %s)", job_id, job["label"], job["status"])
     with JOBS.lock:
         job["status"] = "queued"
         job["cancel_req"] = False
@@ -1122,6 +1222,29 @@ class NoCacheStatic:
 app.add_middleware(NoCacheStatic)
 
 
+class AccessLog:
+    """非 2xx 响应记一条日志(4xx=INFO,5xx=WARNING)。只读 response.start 的状态码,
+    不碰响应流,与 NoCacheStatic 同款纯 ASGI 写法(避免 BaseHTTPMiddleware 的流包装坑)。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            async def send_log(message):
+                if message["type"] == "http.response.start" and message["status"] >= 400:
+                    (log.warning if message["status"] >= 500 else log.info)(
+                        "HTTP %s %s -> %s", scope.get("method"), scope.get("path"),
+                        message["status"])
+                await send(message)
+            await self.app(scope, receive, send_log)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(AccessLog)
+
+
 @app.get("/")
 def index():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -1136,11 +1259,15 @@ if __name__ == "__main__":
     import uvicorn
     import shutil as _sh
     if not Path(C.FF).exists() and not _sh.which(C.FF):
-        print("[警告] 未找到 ffmpeg:打水印/预览会失败。运行 webui\\安装环境.bat 自动下载到项目 bin\\,"
-              "或在 webui\\local_config.bat 里 set \"WM_FFMPEG=你的ffmpeg目录\"", flush=True)
-    print(f"wm2 水印工作台 -> http://127.0.0.1:{PORT}", flush=True)
+        log.warning("[警告] 未找到 ffmpeg:打水印/预览会失败。运行 webui\\安装环境.bat 自动下载到项目 bin\\,"
+                    "或在 webui\\local_config.bat 里 set \"WM_FFMPEG=你的ffmpeg目录\"")
+    log.info("wm2 水印工作台启动 -> http://127.0.0.1:%s | python %s | pid %s | ffmpeg %s",
+             PORT, sys.version.split()[0], os.getpid(), C.FF)
+    # log_config=None:不用 uvicorn 自带的日志配置,其 logger(uvicorn.error 含
+    # "Exception in ASGI application" 堆栈、startup complete 等)propagate 到 root,
+    # 随我们的 backend.log/console handler 输出;access 日志由 uvicorn.access 级别控制。
     if sys.platform != "win32":
-        uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+        uvicorn.run(app, host="127.0.0.1", port=PORT, log_config=None)
     else:
         # Windows 必须用 Selector 循环:Proactor 在客户端突然断开(浏览器杀预连接等)时会在
         # connection_lost 回调里抛 ConnectionResetError,反复出现拖垮服务。
@@ -1151,7 +1278,7 @@ if __name__ == "__main__":
         asyncio.set_event_loop(loop)
         try:
             server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
-                                                   log_level="warning"))
+                                                   log_config=None))
             loop.run_until_complete(server.serve())
         finally:
             loop.close()

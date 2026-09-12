@@ -9,6 +9,7 @@ ffmpeg 流式管道、逐帧 WAM 嵌入、色彩回补、PSNR、帧数校验、�
 """
 import argparse
 import json
+import logging
 import sys
 import uuid
 from pathlib import Path
@@ -16,6 +17,9 @@ from pathlib import Path
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ / "src"))
 import common as C
+import wmlog
+
+log = logging.getLogger("wm.cli.embed_video")
 
 
 def main():
@@ -28,7 +32,11 @@ def main():
                     help="色彩回补:嵌入前红绿各预减 N 级,抵消泛黄/泛紫;"
                          "<0=按强度自动配量(1.5→0.4,2.0→0.5,强度每+0.5约+0.1),0=关闭")
     ap.add_argument("--out", type=str, default=None, help="成品路径;默认 output\<源名>_已加水印[_v2].mp4")
+    ap.add_argument("--log-file", type=str, default=None,
+                    help="日志文件(可选):事件流水带时间戳写入该文件,控制台输出不变")
     args = ap.parse_args()
+    if args.log_file:
+        wmlog.setup_cli(args.log_file)
 
     src = Path(args.input) if args.input else C.one_video()
     if not src.exists():
@@ -42,6 +50,7 @@ def main():
                  else min(0.8, max(0.3, 0.4 + 0.2 * (args.scaling_w - 1.5))), 2)
     print(f"[embed] 源: {src.name}  强度 scaling_w={args.scaling_w}  色彩回补 comp={comp}"
           f"{'(自动)' if args.comp < 0 else ''}", flush=True)
+    log.info("嵌入开始 源=%s 强度=%s 色彩回补=%s crf=%s", src, args.scaling_w, comp, args.crf)
 
     meta = {}
     def cli_emit(ev: dict):
@@ -51,19 +60,24 @@ def main():
             done, total = ev.get("done", 0), ev.get("total")
             if done % 1600 < 8:
                 print(f"  进度 {done}/{total or '?'} 帧", flush=True)
+            log.debug("进度 %s/%s 帧", done, total)
         elif t == "psnr":
             print(f"[embed] PSNR mean={ev['mean']:.2f} min={ev['min']:.2f} p5={ev['p5']:.2f}", flush=True)
+            log.info("PSNR mean=%.2f min=%.2f p5=%.2f", ev["mean"], ev["min"], ev["p5"])
             meta.update(psnr_mean=ev["mean"], psnr_min=ev["min"], psnr_p5=ev["p5"])
         elif t == "selfcheck":
             print(f"[自检] 中段抽帧直解: {'✓' if ev['hit'] else '✗'} acc={ev['acc']}", flush=True)
+            log.info("自检 中段抽帧直解: %s acc=%s", "✓" if ev["hit"] else "✗", ev["acc"])
             meta["selfcheck"] = ev
         elif t == "part":
             print(f"[embed] 半成品 {ev['path']} -> {ev['final']}", flush=True)
+            log.info("半成品 %s -> %s", ev["path"], ev["final"])
 
     try:
         info = C.embed_video(wam, msg1, expect_bits, src, args.crf, part, comp, emit=cli_emit)
         part.replace(final)
     except Exception:
+        log.exception("嵌入失败(半成品清理后重抛)")
         if part.exists():
             try:
                 part.unlink()
@@ -78,8 +92,16 @@ def main():
     (C.OUTPUT / "成品_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[embed] 完成 {info['frames']} 帧, 总耗时 {info['wall_s']}s "
           f"(嵌入纯GPU {info['embed_ms']:.1f} ms/帧) -> {final}", flush=True)
+    log.info("嵌入完成 %s 帧, 总耗时 %ss (嵌入纯GPU %.1f ms/帧) -> %s",
+             info["frames"], info["wall_s"], info["embed_ms"], final)
     print("[embed] 全部完成", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        log.exception("运行失败")
+        raise SystemExit(1)

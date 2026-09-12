@@ -296,6 +296,7 @@ td .sub { font-size: 11.5px; color: var(--ink3); }
   border: 2px solid var(--ink); border-radius: 6px; padding: 10px 12px;
   max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
+.logbox.tall { max-height: 62vh; }  /* 系统日志弹层用大窗 */
 .drawer.wide { width: min(1420px, 96vw); }
 
 /* 顶部居中下拉浮层(媒体预览/对比) */

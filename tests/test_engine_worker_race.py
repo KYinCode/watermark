@@ -40,6 +40,8 @@ def load_engine_worker_class(subprocess):
     ns = dict(
         queue=queue, os=__import__("os"), sys=sys, subprocess=subprocess,
         threading=threading, time=time, json=json,
+        logging=__import__("logging"),
+        log=__import__("logging").getLogger("test.EngineWorker"),
         iso=lambda: datetime.now().isoformat(timespec="seconds"),
         LOGS=LOGS, WEBUI=ROOT / "webui", PROJ=ROOT,
     )

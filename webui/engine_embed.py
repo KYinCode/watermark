@@ -19,7 +19,9 @@ stdout 按行输出 JSON 事件(后端逐行解析):
 视频嵌入核心(流式管道/色彩回补/帧数校验/自检)统一在 common.embed_video,本脚本只做协议与落盘编排。
 """
 import argparse
+import contextlib
 import json
+import logging
 import sys
 import time
 import uuid
@@ -30,6 +32,10 @@ import torch
 PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ / "src"))
 import common as C
+import wmlog
+
+wmlog.setup_engine()  # 引擎日志只走 stderr(后端已把它接进任务日志);stdout 是 JSON 协议通道
+log = logging.getLogger("wm.embed")
 
 
 def emit(obj: dict):
@@ -73,7 +79,12 @@ def main():
 
     part = None
     try:
-        wam, msg1, expect_bits, expect_id = C.load_payload(args.text, args.scaling_w)
+        # redirect_stdout:WAM/omegaconf 加载期的杂散 print 走 stderr,不污染 JSON 协议
+        t0 = time.perf_counter()
+        with contextlib.redirect_stdout(sys.stderr):
+            wam, msg1, expect_bits, expect_id = C.load_payload(args.text, args.scaling_w)
+        log.info("模型加载完成,耗时 %.1fs(sw=%s crf=%s comp=%s)",
+                 time.perf_counter() - t0, args.scaling_w, args.crf, comp)
         id_hex = f"{expect_id:08x}"
 
         if args.input:
@@ -83,8 +94,11 @@ def main():
             final = C.out_name(src.stem, ".mp4")
             part = C.OUTPUT / f"{C.PART_PREFIX}{uuid.uuid4().hex[:8]}-{final.name}"
             emit(dict(type="part", path=str(part), final=str(final)))
+            log.info("开始嵌入视频 %s -> %s", src, final)
             info = C.embed_video(wam, msg1, expect_bits, src, args.crf, part, comp, emit=emit)
             part.replace(final)
+            log.info("视频嵌入完成:%s 帧,PSNR mean=%.2f,耗时 %.0fs",
+                     info["frames"], info["psnr"]["mean"], info["wall_s"])
             meta = dict(source=str(src), out=str(final), work=args.work_name, text=args.text,
                         id_hex=id_hex, scaling_w=args.scaling_w, crf=args.crf, comp=comp,
                         created_at=time.strftime("%Y-%m-%d %H:%M:%S"), **info)
@@ -99,6 +113,7 @@ def main():
             for p in imgs:
                 if not p.exists():
                     raise FileNotFoundError(f"源文件不存在: {p}")
+            log.info("开始嵌入图片 %d 张", len(imgs))
             emit(dict(type="start", kind="images", input=",".join(p.name for p in imgs[:3]) +
                       ("…" if len(imgs) > 3 else ""), total=len(imgs)))
             items = []
@@ -122,6 +137,7 @@ def main():
                 part = None
             emit(dict(type="done", out=items[0]["out"], items=items))
     except Exception as e:
+        log.exception("嵌入失败")
         emit(dict(type="error", message=f"{type(e).__name__}: {e}"))
         if part is not None and part.exists():
             try:

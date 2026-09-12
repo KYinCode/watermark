@@ -295,8 +295,47 @@ function bindJobPanels(root, refresh) {
 /* ============================================================
    页面:总览
    ============================================================ */
+function openSysLog() {
+  /* 系统日志查看:后端 backend.log / 提取引擎 worker.log(后端 /api/logs/{name} 白名单) */
+  let cur = "backend", iv = null;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+    <div class="row" style="margin-bottom:10px;align-items:center">
+      <button class="btn sm" data-log="backend">后端 backend.log</button>
+      <button class="btn sm" data-log="worker">提取引擎 worker.log</button>
+      <span class="sp"></span>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer" class="small">
+        <input type="checkbox" id="sl-auto" checked>自动刷新(3s)</label>
+      <button class="btn sm" id="sl-copy">复制</button>
+    </div>
+    <div class="logbox tall" id="sl-view">加载中…</div>`;
+  const view = $("#sl-view", wrap);
+  const tabs = $$("[data-log]", wrap);
+  const mark = () => tabs.forEach(b => b.classList.toggle("pri", b.dataset.log === cur));
+  const load = async () => {
+    try {
+      const text = await api(`/api/logs/${cur}`);
+      const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
+      view.textContent = text || "(日志为空)";
+      if (atBottom) view.scrollTop = view.scrollHeight;  // 只有本来就在底部才自动滚底,方便上翻排查
+    } catch (e) { view.textContent = "读取失败:" + e.message; }
+  };
+  tabs.forEach(b => b.onclick = () => { cur = b.dataset.log; mark(); load(); });
+  $("#sl-copy", wrap).onclick = () => copyText(view.textContent);
+  $("#sl-auto", wrap).onchange = e => {
+    if (e.target.checked && !iv) iv = setInterval(() => view.isConnected && load(), 3000);
+    else if (!e.target.checked && iv) { clearInterval(iv); iv = null; }
+  };
+  iv = setInterval(() => view.isConnected && load(), 3000);
+  const ov = openModal({ title: "系统日志", body: wrap, lg: true, onClose: () => iv && clearInterval(iv) });
+  mark(); load();
+  return ov;
+}
+
 PAGES.dash = main => {
-  const body = head(main, "总览", "系统自检 · GPU 队列 · 最近动态");
+  const body = head(main, "总览", "系统自检 · GPU 队列 · 最近动态",
+    '<button class="btn" id="ov-syslog">◈ 系统日志</button>');
+  $("#ov-syslog").onclick = openSysLog;
   body.innerHTML = `
     <div class="grid g4" id="ov-cards"></div>
     <div class="grid g2" style="margin-top:18px">
