@@ -7,6 +7,7 @@ pip/HF 等可下载资源一律装/缓存在项目目录内(runtime\\、hf_home\
 """
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -138,7 +139,9 @@ def load_wam(scaling_w: float = 2.0, ckpt_name: str = "wam_mit.pth"):
     try:
         attenuation = JND(**tcfg[args.attenuation], preprocess=unnormalize_img, postprocess=normalize_img)
     except Exception as e:
-        print(f"[warn] JND 配置加载失败({e});水印退化为无 JND 掩码的均匀嵌入,画质与鲁棒性将改变", flush=True)
+        # CLI 未配置 logging 时走 lastResort(stderr),行为与原 print 等价;WebUI/引擎内由 wmlog 统一接管
+        logging.getLogger("wm.common").warning(
+            "JND 配置加载失败(%s);水印退化为无 JND 掩码的均匀嵌入,画质与鲁棒性将改变", e)
         attenuation = None
     wam = Wam(embedder, extractor, augmenter, attenuation, args.scaling_w, args.scaling_i)
     sd = torch.load(REPO / "checkpoints" / ckpt_name, map_location="cpu", weights_only=True)

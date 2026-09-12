@@ -14,6 +14,7 @@ payload 统一: status = hit|unknown|miss
   miss:   {strategy, conf, ...}
 """
 import json
+import logging
 import sys
 import threading
 import time
@@ -27,6 +28,10 @@ sys.path.insert(0, str(PROJ / "src"))
 
 import extract_wm as E  # noqa: E402
 import common as C      # noqa: E402
+import wmlog            # noqa: E402
+
+wmlog.setup_engine()  # 日志只走 stderr(后端已接进 worker.log);stdout 是 JSON 行协议通道
+log = logging.getLogger("wm.worker")
 
 IDLE_TIMEOUT = 600
 
@@ -45,9 +50,12 @@ class Worker:
     def ensure_model(self):
         if self.dec is None:
             import contextlib
+            log.info("开始加载提取模型…")
+            t0 = time.perf_counter()
             with contextlib.redirect_stdout(sys.stderr):  # WAM 库加载期打印走 stderr,不污染 JSON 行协议
                 self.wam = E.load_wam()
             self.dec = E.Decoder(self.wam)
+            log.info("提取模型加载完成,耗时 %.1fs", time.perf_counter() - t0)
             emit(dict(type="model_loaded"))
 
     def result(self, req_id, payload, t0):
@@ -222,9 +230,11 @@ def main():
             except json.JSONDecodeError:
                 continue
             if msg.get("cmd") == "cancel":
+                log.info("收到取消命令,置取消标志")
                 worker.cancel.set()
                 continue
             if msg.get("cmd") == "exit":
+                log.info("收到退出命令,排空队列后退出")
                 eof.set()   # 排空队列后退出(硬终止由后端 kill 完成)
                 return
             if "id" in msg:
@@ -244,11 +254,13 @@ def main():
             if eof.is_set() and q.empty():
                 break
             if time.time() - last_active > IDLE_TIMEOUT:
+                log.info("空闲超过 %ds,退出释放显存", IDLE_TIMEOUT)
                 break
             continue
         last_active = time.time()
         worker.cancel.clear()
         t0 = time.perf_counter()
+        log.info("处理请求 %s cmd=%s", req.get("id"), req.get("cmd"))
         try:
             # 码本每次请求时重读(支持 WebUI 增删作品后即时生效)
             worker.known, worker.works = E.load_codebook()
@@ -269,11 +281,15 @@ def main():
                 emit(dict(id=req["id"], type="result", status="error",
                           message=f"未知命令 {cmd}"))
         except Exception as e:
+            log.exception("请求 %s 处理异常", req.get("id"))
             emit(dict(id=req["id"], type="result", status="error",
                       message=f"{type(e).__name__}: {e}"))
+        log.info("请求 %s 处理返回,耗时 %dms", req.get("id"),
+                 int((time.perf_counter() - t0) * 1000))
         last_active = time.time()
 
     emit(dict(type="bye"))
+    log.info("worker 退出")
 
 
 if __name__ == "__main__":

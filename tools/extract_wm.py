@@ -19,6 +19,7 @@
 """
 import argparse
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ import numpy as np
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ / "src"))
 import common as C  # noqa: E402  (FF/FFPROBE 按 common 的可移植性约定解析:WM_FFMPEG → bin\ → PATH → 常见位置)
+import wmlog  # noqa: E402
 
 
 def load_codebook():
@@ -191,7 +193,12 @@ def main():
     ap.add_argument("--t", type=float, default=None)
     ap.add_argument("--frame", type=int, default=None)
     ap.add_argument("--window", type=float, default=0.5)
+    ap.add_argument("--log-file", type=str, default=None,
+                    help="日志文件(可选):提取流水带时间戳写入该文件,控制台输出不变")
     args = ap.parse_args()
+    if args.log_file:
+        wmlog.setup_cli(args.log_file)
+    log = logging.getLogger("wm.cli.extract_wm")
 
     known, works = load_codebook()
     wam = load_wam()
@@ -206,14 +213,17 @@ def main():
             print(f"[命中] 策略={strat}  ID={vid:08x}")
             print(f"作品: {w['name']}" if w["name"] else "[命中]")
             print("版权文本:", w["text"])
+            log.info("命中 策略=%s ID=%08x 作品=%s", strat, vid, w["name"])
             sys.exit(0)
         shown = f"{vid:08x}" if vid is not None else "----"
         if vid is not None and conf >= 3.0:
             print(f"[未知 ID] ID={shown} 策略={strat} 置信度={conf:.3f}")
             print("(水印已解出但该 ID 未在码本登记;可能码本条目已被删除)")
+            log.info("未知 ID=%s 策略=%s 置信度=%.3f", shown, strat, conf)
         else:
             print(f"[未检出] 最佳候选 ID={shown} 策略={strat} 置信度={conf:.3f}")
             print("(非本项目水印,或画面不含足够水印区域)")
+            log.info("未检出 最佳候选 ID=%s 策略=%s 置信度=%.3f", shown, strat, conf)
         sys.exit(3)
 
     fps, w, h = probe(args.path)
@@ -243,14 +253,23 @@ def main():
         print(f"[命中] ID={vid:08x}")
         print(f"作品: {w['name']}" if w["name"] else "[命中]")
         print("版权文本:", w["text"])
+        log.info("命中 ID=%08x 命中帧=%d/%d 策略分布=%s", vid, n_hit, len(frames), strats)
         sys.exit(0)
     shown = f"{unknown_best[0]:08x}" if unknown_best[0] is not None else "----"
     if unknown_best[0] is not None:
         print(f"[未知 ID] 邻域内解出未登记 ID={shown} (置信度={unknown_best[1]:.3f}),码本无此条目")
+        log.info("未知 ID=%s 置信度=%.3f", shown, unknown_best[1])
     else:
         print("[未命中] 邻域内所有帧均未解出本项目水印")
+        log.info("未命中 邻域帧数=%d", len(frames))
     sys.exit(3)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        logging.getLogger("wm.cli.extract_wm").exception("运行失败")
+        raise SystemExit(1)

@@ -4,6 +4,7 @@
 """
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -13,6 +14,9 @@ import numpy as np
 
 import common as C
 import s2_attacks as S
+import wmlog
+
+log = logging.getLogger("wm.cli.verify")
 
 TMP = C.OUT / "verify_tmp"
 TMP.mkdir(parents=True, exist_ok=True)
@@ -47,6 +51,8 @@ def report(wam, name, it, n, msg_np, results):
              acc=float(accs.mean()), cov=float(covs.mean()))
     results.append(r)
     print(f"  {name:<30} exact={r['exact']:6.1%} ge31={r['ge31']:6.1%} acc={r['acc']:.4f} cov={r['cov']:.3f}", flush=True)
+    log.info("攻击项 %s exact=%.1f%% ge31=%.1f%% acc=%.4f cov=%.3f",
+             name, r["exact"] * 100, r["ge31"] * 100, r["acc"], r["cov"])
     return r
 
 
@@ -54,7 +60,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--product", default=None, help="默认取 output\ 下最新的 *_已加水印.mp4")
     ap.add_argument("--start", type=int, nargs="+", default=[5000])
+    ap.add_argument("--log-file", type=str, default=None,
+                    help="日志文件(可选):验收流水带时间戳写入该文件,控制台输出不变")
     args = ap.parse_args()
+    if args.log_file:
+        wmlog.setup_cli(args.log_file)
     product = Path(args.product) if args.product else max(
         C.OUTPUT.glob("*_已加水印*.mp4"), key=lambda q: q.stat().st_mtime)
     msg_np = C.wm_msg_bits()
@@ -76,6 +86,7 @@ def run_segment(product, args_start, msg_np, wam):
         C.encode_frames(C.read_frames(product, args_start, N), part, 14)  # 近无损中转,只用于稳定读写
         part.replace(prod_seg)
     print(f"[verify] {product.name} @ 帧{args_start}-{args_start + N - 1}", flush=True)
+    log.info("开始验收 %s @ 帧%d-%d", product.name, args_start, args_start + N - 1)
 
     # 1) 1:1 基线(成品直解,精确 660 帧列表,不经中转)
     report(wam, "01_1to1直解", C.read_frames(product, args_start, N), N, msg_np, results)
@@ -222,7 +233,14 @@ def run_segment(product, args_start, msg_np, wam):
     out.write_text(json.dumps(dict(product=product.name, start=args_start, n=N, results=results),
                               ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[verify] 完成 -> {out}", flush=True)
+    log.info("验收完成 %d 项 -> %s", len(results), out)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        log.exception("运行失败")
+        raise SystemExit(1)
